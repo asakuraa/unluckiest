@@ -57,6 +57,25 @@ let mode = "local"; // "local" | "firebase"
 let db   = null;
 
 // -------------------------------------------------------------------------
+// Auth (password gate)
+// -------------------------------------------------------------------------
+let sitePassword = null; // null = ยังไม่โหลดจาก DB
+
+function checkSession() {
+  return sessionStorage.getItem("glAuthed") === "1";
+}
+
+function resolveAuth(pw) {
+  sitePassword = (pw && String(pw).trim()) || "1234";
+  if (checkSession()) hideAuthOverlay();
+}
+
+function hideAuthOverlay() {
+  const el = document.getElementById("authOverlay");
+  if (el) el.hidden = true;
+}
+
+// -------------------------------------------------------------------------
 // Storage layer
 // -------------------------------------------------------------------------
 const LOCAL_KEY     = "gachaLuckStateV2";
@@ -93,6 +112,7 @@ function loadLocal() {
   } catch (e) {
     console.warn("โหลด localStorage ไม่สำเร็จ", e);
   }
+  resolveAuth(localStorage.getItem("glPassword"));
   render();
 }
 
@@ -138,6 +158,11 @@ function initStore() {
 }
 
 function attachFirebaseListeners() {
+  // อ่านรหัสผ่านจาก DB ก่อน (1 ครั้ง)
+  db.ref("sitePassword").once("value", snap => {
+    resolveAuth(snap.val());
+  });
+
   db.ref("settings").on("value", (snap) => {
     const val = snap.val();
     if (!val) { db.ref("settings").set(DEFAULT_SETTINGS); return; }
@@ -245,7 +270,7 @@ function pullScore(pull, s) {
 }
 
 // -------------------------------------------------------------------------
-// Dashboard computation (EV per banner including hoshi, Z-score on all hits)
+// Dashboard computation — hoshi uses renormalized probability (rate/rate5star)
 // -------------------------------------------------------------------------
 function computePlayerStats(playerName) {
   const s = state.settings;
@@ -256,45 +281,72 @@ function computePlayerStats(playerName) {
   const actualPoints = playerPulls.reduce((a, p) => a + pullScore(p, s), 0);
   const actualHits   = playerPulls.length;
 
-  // Group all rolls (รวมโฮชิ) by bannerId
-  const bannerTotals = {};
-  for (const roll of playerRolls) {
-    const bid = roll.bannerId || "__none__";
-    if (!bannerTotals[bid]) bannerTotals[bid] = { bannerId: roll.bannerId, rolls: 0 };
-    bannerTotals[bid].rolls += Number(roll.rolls || 0);
-  }
-
   let expectedHits   = 0;
   let expectedPoints = 0;
-  let effectiveRolls = 0;
-  const breakdown    = [];
+  let variance       = 0;
+  const bannerMap    = {};  // for tooltip breakdown
 
-  for (const { bannerId, rolls: n } of Object.values(bannerTotals)) {
-    const banner = bannerId && state.banners[bannerId];
-    const rates  = getBannerRates(banner);
+  for (const roll of playerRolls) {
+    const banner    = roll.bannerId && state.banners[roll.bannerId];
+    const rates     = getBannerRates(banner);
+    const n         = Number(roll.rolls || 0);
+    const isHoshi   = !!roll.hoshi;
+    const rate5star = (banner?.rate5star != null) ? Number(banner.rate5star) : 12;
+    const bid       = roll.bannerId || "__none__";
+
     if (!rates.length || !n) continue;
 
-    let bannerExp     = 0;
-    const rateEntries = [];
-    for (const rateEntry of rates) {
-      const cr      = Number(rateEntry.rate || 0) / 100;
-      const base    = s.baseScores[rateEntry.category] || 0;
-      const perRoll = cr * base;
-      const total   = n * perRoll;
-      const label   = CATEGORIES.find(c => c.key === rateEntry.category)?.label || rateEntry.category;
+    // init banner breakdown entry
+    if (!bannerMap[bid]) {
+      bannerMap[bid] = {
+        name: banner?.name || "(ไม่ระบุตู้)",
+        rate5star,
+        normalRolls: 0,
+        hoshiRolls:  0,
+        rateData: {},
+      };
+      for (const re of rates) {
+        const label = CATEGORIES.find(c => c.key === re.category)?.label || re.category;
+        bannerMap[bid].rateData[re.category] = {
+          label, rate: Number(re.rate),
+          base: s.baseScores[re.category] || 0,
+          normalTotal: 0, hoshiTotal: 0,
+        };
+      }
+    }
+
+    const bd = bannerMap[bid];
+    if (isHoshi) bd.hoshiRolls += n;
+    else         bd.normalRolls += n;
+
+    let pTotal = 0;
+    for (const re of rates) {
+      // ปกติ: rate/100 | โฮชิ: rate/rate5star (renormalize เพราะ 5★ ออก 100%)
+      const cr    = isHoshi
+        ? (rate5star > 0 ? Number(re.rate) / rate5star : 0)
+        : Number(re.rate) / 100;
+      const base  = s.baseScores[re.category] || 0;
+      const total = n * cr * base;
+
       expectedHits   += n * cr;
       expectedPoints += total;
-      bannerExp      += total;
-      rateEntries.push({ label, rate: rateEntry.rate, base, perRoll, total });
+      pTotal         += cr;
+
+      if (bd.rateData[re.category]) {
+        if (isHoshi) bd.rateData[re.category].hoshiTotal  += total;
+        else         bd.rateData[re.category].normalTotal += total;
+      }
     }
-    effectiveRolls += n;
-    breakdown.push({ name: banner?.name || "(ไม่ระบุตู้)", rolls: n, rateEntries, total: bannerExp });
+    variance += n * pTotal * Math.max(1 - pTotal, 0);
   }
 
-  const avgRate  = effectiveRolls > 0 ? expectedHits / effectiveRolls : 0;
-  const variance = effectiveRolls * avgRate * Math.max(1 - avgRate, 0);
-  const sd       = Math.sqrt(variance);
-  const z        = variance > 0 ? (actualHits - expectedHits) / sd : 0;
+  const breakdown = Object.values(bannerMap).map(bd => ({
+    ...bd,
+    total: Object.values(bd.rateData).reduce((acc, r) => acc + r.normalTotal + r.hoshiTotal, 0),
+  }));
+
+  const sd = Math.sqrt(variance);
+  const z  = variance > 0 ? (actualHits - expectedHits) / sd : 0;
 
   return {
     player: playerName,
@@ -499,17 +551,29 @@ function buildExpectedTip(breakdown, expectedPoints) {
   if (!breakdown.length) return esc("ยังไม่มีข้อมูลตู้");
   const parts = [];
   for (const bd of breakdown) {
-    parts.push(`[${bd.name}  ×  ${bd.rolls} โรล]`);
-    for (const re of bd.rateEntries) {
-      parts.push(`  ${re.label}  ${re.rate}% × ${re.base}pts = ${fmt(re.perRoll, 4)}/roll → ${fmt(re.total, 1)}`);
+    const totalRolls = bd.normalRolls + bd.hoshiRolls;
+    const hoshiNote  = bd.hoshiRolls > 0 ? `  (โฮชิ ${bd.hoshiRolls} roll)` : "";
+    parts.push(`[${bd.name}  ×  ${totalRolls} โรล${hoshiNote}]`);
+
+    for (const re of Object.values(bd.rateData)) {
+      if (bd.normalRolls > 0) {
+        const prob    = re.rate / 100;
+        const perRoll = prob * re.base;
+        parts.push(`  ${re.label}  ${re.rate}%×${re.base}pts=${fmt(perRoll,4)}/roll × ${bd.normalRolls} = ${fmt(re.normalTotal,1)}`);
+      }
+      if (bd.hoshiRolls > 0) {
+        const prob    = bd.rate5star > 0 ? re.rate / bd.rate5star : 0;
+        const perRoll = prob * re.base;
+        parts.push(`  ${re.label}  [โฮชิ] ${re.rate}/${bd.rate5star}%=${fmt(prob*100,1)}%×${re.base}pts=${fmt(perRoll,4)}/roll × ${bd.hoshiRolls} = ${fmt(re.hoshiTotal,1)}`);
+      }
     }
     parts.push(`  รวมตู้นี้:  ${fmt(bd.total, 1)} pts`);
     parts.push("─────────────────────────────────────────");
   }
   parts.push(`รวมทั้งหมด  ${fmt(expectedPoints, 1)} pts`);
   parts.push("");
-  parts.push("สูตร: rolls × rate% × Base score");
-  parts.push("(รวมโฮชิ · ไม่รวม Meta / ด่าน / ดุ๊ป)");
+  parts.push("ปกติ : rolls × rate%       × Base");
+  parts.push("โฮชิ : 1roll × (rate/5★%) × Base");
   return esc(parts.join("\n"));
 }
 
@@ -621,6 +685,27 @@ function addBannerRateRow(defaultCat = "", defaultRate = "") {
 // Event wiring
 // -------------------------------------------------------------------------
 document.addEventListener("DOMContentLoaded", () => {
+
+  // ── Auth form ─────────────────────────────────────────────────────────
+  document.getElementById("authForm").addEventListener("submit", e => {
+    e.preventDefault();
+    const errEl = document.getElementById("authError");
+    if (sitePassword === null) {
+      errEl.textContent = "⏳ กำลังโหลด กรุณารอสักครู่…";
+      errEl.hidden = false;
+      return;
+    }
+    const val = document.getElementById("authInput").value;
+    if (val === sitePassword) {
+      sessionStorage.setItem("glAuthed", "1");
+      hideAuthOverlay();
+    } else {
+      errEl.textContent = "❌ รหัสผ่านไม่ถูกต้อง";
+      errEl.hidden = false;
+      document.getElementById("authInput").value = "";
+      document.getElementById("authInput").focus();
+    }
+  });
 
   // ── Tabs ──────────────────────────────────────────────────────────────
   document.querySelectorAll(".tab-btn").forEach(btn => {
@@ -827,6 +912,39 @@ document.addEventListener("DOMContentLoaded", () => {
 
   // ── Initial empty banner rate row ─────────────────────────────────────
   addBannerRateRow();
+
+  // ── Global floating tooltip (position:fixed — ไม่โดน overflow บัง) ────
+  (function () {
+    const tipEl = document.createElement("div");
+    tipEl.className = "global-tip";
+    tipEl.style.display = "none";
+    document.body.appendChild(tipEl);
+
+    document.addEventListener("mouseenter", e => {
+      const wrap = e.target.closest(".tip-wrap");
+      if (!wrap) return;
+      const src = wrap.querySelector(".tip-box");
+      if (!src) return;
+      tipEl.innerHTML = src.innerHTML;
+      tipEl.style.display = "block";
+
+      const r  = wrap.getBoundingClientRect();
+      const tw = tipEl.offsetWidth;
+      const th = tipEl.offsetHeight;
+      // แสดงเหนือ cell; ถ้าชิดขอบบนให้แสดงใต้แทน
+      let top  = r.top - th - 10;
+      let left = r.left;
+      if (top < 8)                              top  = r.bottom + 10;
+      if (left + tw > window.innerWidth - 8)   left = window.innerWidth - tw - 8;
+      if (left < 8)                             left = 8;
+      tipEl.style.top  = top  + "px";
+      tipEl.style.left = left + "px";
+    }, true);
+
+    document.addEventListener("mouseleave", e => {
+      if (e.target.closest(".tip-wrap")) tipEl.style.display = "none";
+    }, true);
+  })();
 
   initStore();
 });

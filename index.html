@@ -11,6 +11,19 @@
 </head>
 <body>
 
+<!-- ================= AUTH OVERLAY ================= -->
+<div id="authOverlay" class="auth-overlay">
+  <div class="auth-box">
+    <div class="auth-logo"><span class="dot"></span><h2>Gacha Luck Tracker</h2></div>
+    <p class="hint" style="margin-top:6px">กรุณาใส่รหัสผ่านเพื่อเข้าใช้งาน</p>
+    <form id="authForm" class="auth-form">
+      <input type="password" id="authInput" placeholder="รหัสผ่าน" autocomplete="current-password" required>
+      <button type="submit" class="btn-primary">เข้าสู่ระบบ</button>
+    </form>
+    <p id="authError" class="auth-error" hidden></p>
+  </div>
+</div>
+
 <header class="topbar">
   <div class="topbar-inner">
     <h1><span class="dot"></span> Gacha Luck Tracker</h1>
