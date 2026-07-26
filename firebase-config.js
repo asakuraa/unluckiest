@@ -13,13 +13,13 @@
 // ==========================================================================
 
 const firebaseConfig = {
-  apiKey: "",
-  authDomain: "",
-  databaseURL: "",
-  projectId: "",
-  storageBucket: "",
-  messagingSenderId: "",
-  appId: ""
+  apiKey: "AIzaSyDKcdgmWSfTvSzoSIwiSYH60w7QhTM3-oM",
+  authDomain: "unluckiest-is-mine.firebaseapp.com",
+  databaseURL: "https://unluckiest-is-mine-default-rtdb.asia-southeast1.firebasedatabase.app",
+  projectId: "unluckiest-is-mine",
+  storageBucket: "unluckiest-is-mine.firebasestorage.app",
+  messagingSenderId: "408163032952",
+  appId: "1:408163032952:web:9f2ec1125acf5c2bee728d"
 };
 
 // ไม่ต้องแก้บรรทัดล่างนี้ — เช็คอัตโนมัติว่ากรอก config ครบหรือยัง

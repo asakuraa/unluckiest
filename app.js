@@ -1,60 +1,94 @@
 // =========================================================================
-// Gacha Luck Tracker — app.js
-// โครงสร้างข้อมูล (ไม่ว่าจะเก็บบน Firebase Realtime DB หรือ localStorage):
+// Gacha Luck Tracker — app.js v2  (ระบบโฮชิ + ตู้เป็น List)
 // state = {
-//   settings: { evRate, evCategory, baseScores{}, dupWeights[4], diffDupWeights[4],
-//               metaBonus, maxDifficulty, monthlyPoint, stages:{id:{name,weight,monthly}} },
-//   players: { id: {name} },
-//   rollLog: { id: {player, rolls, ts} },   // append-only
-//   pullLog: { id: {player, category, dupTier, meta, stageId, ts} } // append-only
+//   settings : { baseScores{}, dupWeights[4], diffDupWeights[4],
+//                metaBonus, maxDifficulty, monthlyPoint, stages:{} },
+//   banners  : { id: { name, collabRate } },
+//   players  : { id: { name } },
+//   rollLog  : { id: { player, bannerId, rolls, hoshi, ts } },
+//   pullLog  : { id: { player, bannerId, category, dupTier, meta, stageId, ts } }
 // }
 // =========================================================================
 
 const CATEGORIES = [
-  { key: "limitEndMid", label: "Limit end / mid" },
+  { key: "limitEndMid",  label: "Limit end / mid" },
   { key: "limitElement", label: "Limit element" },
-  { key: "collab", label: "Collab" },
-  { key: "alpha", label: "Alpha" },
-  { key: "otherLimit", label: "Other limit" },
+  { key: "collab",       label: "Collab" },
+  { key: "alpha",        label: "Alpha" },
+  { key: "otherLimit",   label: "Other limit" },
 ];
 
+// Normalize banner → always return rates[] (backward compat with old collabRate format)
+function getBannerRates(b) {
+  if (!b) return [];
+  if (Array.isArray(b.rates) && b.rates.length) return b.rates;
+  if (b.collabRate !== undefined) return [{ category: "collab", rate: Number(b.collabRate) }];
+  return [];
+}
+
+function bannerRatesSummary(b) {
+  return getBannerRates(b)
+    .filter(r => Number(r.rate) > 0)
+    .map(r => {
+      const label = CATEGORIES.find(c => c.key === r.category)?.label || r.category;
+      return `${r.rate}% ${label}`;
+    })
+    .join(" + ") || "—";
+}
+
+
 const DEFAULT_SETTINGS = {
-  evRate: 7.2, // เก็บเป็น % เพื่อให้แก้ในฟอร์มง่าย หารร้อยตอนคำนวณ
-  evCategory: "collab",
-  baseScores: { limitEndMid: 15, limitElement: 15, collab: 10, alpha: 10, otherLimit: 10 },
-  dupWeights: [1, 0.6, 0.3, 0],
-  diffDupWeights: [1, 0.6, 0, 0],
-  metaBonus: 10,
-  maxDifficulty: 20,
-  monthlyPoint: 5,
-  stages: {},
+  baseScores:     { limitEndMid: 15, limitElement: 15, collab: 10, alpha: 10, otherLimit: 10 },
+  dupWeights:     [1, 0.6, 0.3, 0],
+  metaBonus:      10,
+  monthlyPoint:   5,
+  stages:         {},
 };
 
 let state = {
   settings: JSON.parse(JSON.stringify(DEFAULT_SETTINGS)),
-  players: {},
-  rollLog: {},
-  pullLog: {},
+  banners:  {},
+  players:  {},
+  rollLog:  {},
+  pullLog:  {},
 };
 
 let mode = "local"; // "local" | "firebase"
-let db = null;
+let db   = null;
 
 // -------------------------------------------------------------------------
 // Storage layer
 // -------------------------------------------------------------------------
-const LOCAL_KEY = "gachaLuckState";
+const LOCAL_KEY     = "gachaLuckStateV2";
+const LOCAL_KEY_OLD = "gachaLuckState";
 
 function loadLocal() {
   try {
-    const raw = localStorage.getItem(LOCAL_KEY);
-    if (raw) {
+    let raw = localStorage.getItem(LOCAL_KEY);
+
+    if (!raw) {
+      // ลองอ่านข้อมูลเก่า (v1) แล้ว migrate
+      const oldRaw = localStorage.getItem(LOCAL_KEY_OLD);
+      if (oldRaw) {
+        const old = JSON.parse(oldRaw);
+        state.settings = Object.assign({}, DEFAULT_SETTINGS, old.settings || {});
+        state.settings.baseScores = Object.assign({}, DEFAULT_SETTINGS.baseScores, (old.settings || {}).baseScores || {});
+        state.settings.stages     = (old.settings || {}).stages || {};
+        state.players  = old.players  || {};
+        state.rollLog  = old.rollLog  || {};   // entries เก่าไม่มี bannerId — OK
+        state.pullLog  = old.pullLog  || {};
+        state.banners  = {};
+        saveLocal();
+      }
+    } else {
       const parsed = JSON.parse(raw);
       state.settings = Object.assign({}, DEFAULT_SETTINGS, parsed.settings || {});
       state.settings.baseScores = Object.assign({}, DEFAULT_SETTINGS.baseScores, (parsed.settings || {}).baseScores || {});
-      state.players = parsed.players || {};
-      state.rollLog = parsed.rollLog || {};
-      state.pullLog = parsed.pullLog || {};
+      state.settings.stages     = (parsed.settings || {}).stages || {};
+      state.banners  = parsed.banners  || {};
+      state.players  = parsed.players  || {};
+      state.rollLog  = parsed.rollLog  || {};
+      state.pullLog  = parsed.pullLog  || {};
     }
   } catch (e) {
     console.warn("โหลด localStorage ไม่สำเร็จ", e);
@@ -70,6 +104,9 @@ function uid() {
   return Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
 }
 
+// -------------------------------------------------------------------------
+// Firebase / init
+// -------------------------------------------------------------------------
 function initStore() {
   if (window.FIREBASE_ENABLED) {
     mode = "firebase";
@@ -103,13 +140,14 @@ function initStore() {
 function attachFirebaseListeners() {
   db.ref("settings").on("value", (snap) => {
     const val = snap.val();
-    if (!val) {
-      db.ref("settings").set(DEFAULT_SETTINGS);
-      return;
-    }
+    if (!val) { db.ref("settings").set(DEFAULT_SETTINGS); return; }
     state.settings = Object.assign({}, DEFAULT_SETTINGS, val);
     state.settings.baseScores = Object.assign({}, DEFAULT_SETTINGS.baseScores, val.baseScores || {});
     state.settings.stages = val.stages || {};
+    render();
+  });
+  db.ref("banners").on("value", (snap) => {
+    state.banners = snap.val() || {};
     render();
   });
   db.ref("players").on("value", (snap) => {
@@ -128,62 +166,47 @@ function attachFirebaseListeners() {
 
 function setConnStatus(kind, text) {
   const el = document.getElementById("connStatus");
-  el.className = "conn-status conn-" + (kind === "online" ? "online" : kind === "error" ? "bad" : "local");
+  el.className = "conn-status conn-" +
+    (kind === "online" ? "online" : kind === "error" ? "bad" : "local");
   el.textContent = "โหมด: " + text;
   document.getElementById("footerMode").textContent =
-    mode === "firebase" ? "เชื่อมต่อ Firebase อยู่" : "เก็บข้อมูลใน localStorage เครื่องนี้เท่านั้น";
+    mode === "firebase"
+      ? "เชื่อมต่อ Firebase อยู่"
+      : "เก็บข้อมูลใน localStorage เครื่องนี้เท่านั้น";
 }
 
 function persistSettings() {
-  if (mode === "firebase") {
-    db.ref("settings").set(state.settings);
-  } else {
-    saveLocal();
-    render();
-  }
+  if (mode === "firebase") db.ref("settings").set(state.settings);
+  else { saveLocal(); render(); }
 }
 
+// -------------------------------------------------------------------------
+// CRUD helpers
+// -------------------------------------------------------------------------
 function addPlayer(name) {
   const id = uid();
-  if (mode === "firebase") {
-    db.ref("players/" + id).set({ name });
-  } else {
-    state.players[id] = { name };
-    saveLocal();
-    render();
-  }
+  if (mode === "firebase") db.ref("players/" + id).set({ name });
+  else { state.players[id] = { name }; saveLocal(); render(); }
 }
-
 function removePlayer(id) {
-  if (mode === "firebase") {
-    db.ref("players/" + id).remove();
-  } else {
-    delete state.players[id];
-    saveLocal();
-    render();
-  }
+  if (mode === "firebase") db.ref("players/" + id).remove();
+  else { delete state.players[id]; saveLocal(); render(); }
 }
 
-function addRollEntry(entry) {
-  entry.ts = Date.now();
-  if (mode === "firebase") {
-    db.ref("rollLog").push(entry);
-  } else {
-    state.rollLog[uid()] = entry;
-    saveLocal();
-    render();
-  }
+function addBanner(banner) {
+  const id = uid();
+  if (mode === "firebase") db.ref("banners/" + id).set(banner);
+  else { state.banners[id] = banner; saveLocal(); render(); }
+}
+function removeBanner(id) {
+  if (mode === "firebase") db.ref("banners/" + id).remove();
+  else { delete state.banners[id]; saveLocal(); render(); }
 }
 
 function addPullEntry(entry) {
   entry.ts = Date.now();
-  if (mode === "firebase") {
-    db.ref("pullLog").push(entry);
-  } else {
-    state.pullLog[uid()] = entry;
-    saveLocal();
-    render();
-  }
+  if (mode === "firebase") db.ref("pullLog").push(entry);
+  else { state.pullLog[uid()] = entry; saveLocal(); render(); }
 }
 
 function addStage(stage) {
@@ -192,7 +215,6 @@ function addStage(stage) {
   state.settings.stages[id] = stage;
   persistSettings();
 }
-
 function removeStage(id) {
   if (state.settings.stages) delete state.settings.stages[id];
   persistSettings();
@@ -202,72 +224,106 @@ function removeStage(id) {
 // Scoring engine
 // -------------------------------------------------------------------------
 function stagePointsOf(stage, s) {
-  return stage.weight * s.maxDifficulty + (stage.monthly ? s.monthlyPoint : 0);
+  // ใหม่: difficulty 1-20 ตรงๆ | เก่า: weight × 20 (backward compat)
+  const diffPts = stage.difficulty !== undefined
+    ? Number(stage.difficulty)
+    : Math.round((stage.weight || 0) * 20);
+  return diffPts + (stage.monthly ? (s.monthlyPoint || 0) : 0);
 }
 
 function pullScore(pull, s) {
-  const base = s.baseScores[pull.category] || 0;
-  const meta = pull.meta ? s.metaBonus : 0;
-  const dupW = s.dupWeights[Math.min(pull.dupTier, 3)] ?? 0;
-  let score = (base + meta) * dupW;
+  const base  = s.baseScores[pull.category] || 0;
+  const meta  = pull.meta ? s.metaBonus : 0;
+  const dupW  = s.dupWeights[Math.min(pull.dupTier, 3)] ?? 0;
+  let score   = (base + meta) * dupW;
 
-  if (pull.stageId && s.stages && s.stages[pull.stageId]) {
-    const stage = s.stages[pull.stageId];
-    const diffDupW = s.diffDupWeights[Math.min(pull.dupTier, 3)] ?? 0;
-    score += stagePointsOf(stage, s) * diffDupW;
+  // ได้แต้มด่านเฉพาะเมื่อ stageApplies !== false (ค่า default = true สำหรับข้อมูลเก่า)
+  if (pull.stageId && pull.stageApplies !== false && s.stages?.[pull.stageId]) {
+    score += stagePointsOf(s.stages[pull.stageId], s);
   }
   return score;
 }
 
+// -------------------------------------------------------------------------
+// Dashboard computation (EV per banner including hoshi, Z-score on all hits)
+// -------------------------------------------------------------------------
 function computePlayerStats(playerName) {
   const s = state.settings;
-  const rolls = Object.values(state.rollLog).filter((r) => r.player === playerName);
-  const pulls = Object.values(state.pullLog).filter((p) => p.player === playerName);
+  const playerRolls = Object.values(state.rollLog).filter(r => r.player === playerName);
+  const playerPulls = Object.values(state.pullLog).filter(p => p.player === playerName);
 
-  const totalRolls = rolls.reduce((a, r) => a + Number(r.rolls || 0), 0);
-  const actualPoints = pulls.reduce((a, p) => a + pullScore(p, s), 0);
-  const evHits = pulls.filter((p) => p.category === s.evCategory).length;
+  const totalRolls   = playerRolls.reduce((a, r) => a + Number(r.rolls || 0), 0);
+  const actualPoints = playerPulls.reduce((a, p) => a + pullScore(p, s), 0);
+  const actualHits   = playerPulls.length;
 
-  const rate = Number(s.evRate) / 100;
-  const evBase = s.baseScores[s.evCategory] || 0;
-  const expectedPoints = totalRolls * rate * evBase;
-  const expectedHits = totalRolls * rate;
-  const hitDeviation = evHits - expectedHits;
-  const variance = totalRolls * rate * (1 - rate);
-  const sd = Math.sqrt(variance);
-  const z = variance > 0 ? hitDeviation / sd : 0;
+  // Group all rolls (รวมโฮชิ) by bannerId
+  const bannerTotals = {};
+  for (const roll of playerRolls) {
+    const bid = roll.bannerId || "__none__";
+    if (!bannerTotals[bid]) bannerTotals[bid] = { bannerId: roll.bannerId, rolls: 0 };
+    bannerTotals[bid].rolls += Number(roll.rolls || 0);
+  }
+
+  let expectedHits   = 0;
+  let expectedPoints = 0;
+  let effectiveRolls = 0;
+  const breakdown    = [];
+
+  for (const { bannerId, rolls: n } of Object.values(bannerTotals)) {
+    const banner = bannerId && state.banners[bannerId];
+    const rates  = getBannerRates(banner);
+    if (!rates.length || !n) continue;
+
+    let bannerExp     = 0;
+    const rateEntries = [];
+    for (const rateEntry of rates) {
+      const cr      = Number(rateEntry.rate || 0) / 100;
+      const base    = s.baseScores[rateEntry.category] || 0;
+      const perRoll = cr * base;
+      const total   = n * perRoll;
+      const label   = CATEGORIES.find(c => c.key === rateEntry.category)?.label || rateEntry.category;
+      expectedHits   += n * cr;
+      expectedPoints += total;
+      bannerExp      += total;
+      rateEntries.push({ label, rate: rateEntry.rate, base, perRoll, total });
+    }
+    effectiveRolls += n;
+    breakdown.push({ name: banner?.name || "(ไม่ระบุตู้)", rolls: n, rateEntries, total: bannerExp });
+  }
+
+  const avgRate  = effectiveRolls > 0 ? expectedHits / effectiveRolls : 0;
+  const variance = effectiveRolls * avgRate * Math.max(1 - avgRate, 0);
+  const sd       = Math.sqrt(variance);
+  const z        = variance > 0 ? (actualHits - expectedHits) / sd : 0;
 
   return {
     player: playerName,
-    totalRolls,
-    evHits,
-    expectedHits,
-    actualPoints,
-    expectedPoints,
+    totalRolls, actualHits, expectedHits,
+    actualPoints, expectedPoints,
     deviation: actualPoints - expectedPoints,
-    z,
+    z, breakdown,
   };
 }
 
 // -------------------------------------------------------------------------
-// Rendering
+// Rendering helpers
 // -------------------------------------------------------------------------
 function fmt(n, d = 2) {
-  return Number(n).toLocaleString("en-US", { minimumFractionDigits: d, maximumFractionDigits: d });
+  return Number(n).toLocaleString("en-US", {
+    minimumFractionDigits: d, maximumFractionDigits: d,
+  });
 }
 function fmtDate(ts) {
   return new Date(ts).toLocaleString("th-TH", { dateStyle: "short", timeStyle: "short" });
 }
-
-function playerNames() {
-  return Object.values(state.players).map((p) => p.name);
-}
+function playerNames()  { return Object.values(state.players).map(p => p.name); }
+function bannerEntries(){ return Object.entries(state.banners); }
 
 function render() {
   renderPlayerSelects();
-  renderCategorySelects();
-  renderStageSelect();
+  renderBannerSelects();
   renderPlayerChips();
+  renderBannerChips();
   renderSettingsForm();
   renderStageTable();
   renderRollLogTable();
@@ -277,125 +333,192 @@ function render() {
 
 function renderPlayerSelects() {
   const names = playerNames();
-  ["rollPlayerSelect", "pullPlayerSelect"].forEach((id) => {
-    const sel = document.getElementById(id);
-    const prev = sel.value;
-    sel.innerHTML = names.length
-      ? names.map((n) => `<option value="${esc(n)}">${esc(n)}</option>`).join("")
-      : `<option value="">— เพิ่มผู้เล่นในแท็บตั้งค่าก่อน —</option>`;
-    if (names.includes(prev)) sel.value = prev;
-  });
+  const sel   = document.getElementById("rollPlayerSelect");
+  const prev  = sel.value;
+  sel.innerHTML = names.length
+    ? names.map(n => `<option value="${esc(n)}">${esc(n)}</option>`).join("")
+    : `<option value="">— เพิ่มผู้เล่นในแท็บตั้งค่าก่อน —</option>`;
+  if (names.includes(prev)) sel.value = prev;
 }
 
-function renderCategorySelects() {
-  ["pullCategory", "setEvCategory"].forEach((id) => {
-    const sel = document.getElementById(id);
-    const prev = sel.value || state.settings.evCategory;
-    sel.innerHTML = CATEGORIES.map((c) => `<option value="${c.key}">${c.label}</option>`).join("");
-    sel.value = prev;
-  });
-}
-
-function renderStageSelect() {
-  const sel = document.getElementById("pullStage");
+function renderBannerSelects() {
+  const entries = bannerEntries();
+  const sel     = document.getElementById("rollBannerSelect");
+  if (!sel) return;
   const prev = sel.value;
-  const stages = state.settings.stages || {};
-  const opts = Object.entries(stages)
-    .map(([id, st]) => `<option value="${id}">${esc(st.name)} (${st.monthly ? "Monthly" : "ปกติ"})</option>`)
-    .join("");
-  sel.innerHTML = `<option value="">— ไม่มี / ยังลงไม่ได้ —</option>` + opts;
-  sel.value = prev;
+  sel.innerHTML = entries.length
+      ? entries.map(([bid, b]) =>
+          `<option value="${bid}">${esc(b.name)} (${esc(bannerRatesSummary(b))})</option>`
+        ).join("")
+    : `<option value="">— เพิ่มตู้ในแท็บตั้งค่าก่อน —</option>`;
+  const ids = entries.map(([bid]) => bid);
+  if (ids.includes(prev)) sel.value = prev;
 }
 
 function renderPlayerChips() {
-  const ul = document.getElementById("playerList");
+  const ul      = document.getElementById("playerList");
   const entries = Object.entries(state.players);
-  ul.innerHTML = entries.length
-    ? entries.map(([id, p]) => `<li>${esc(p.name)} <button data-remove-player="${id}" title="ลบผู้เล่น">×</button></li>`).join("")
+  ul.innerHTML  = entries.length
+    ? entries.map(([id, p]) =>
+        `<li>${esc(p.name)} <button data-remove-player="${id}" title="ลบ">×</button></li>`
+      ).join("")
     : `<li class="hint small">ยังไม่มีผู้เล่น</li>`;
+}
+
+function renderBannerChips() {
+  const ul      = document.getElementById("bannerList");
+  const entries = bannerEntries();
+  ul.innerHTML  = entries.length
+    ? entries.map(([id, b]) => {
+        const r5 = b.rate5star !== undefined ? `5★ ${b.rate5star}%` : `5★ 12%`;
+        return `<li>
+          <span class="banner-chip-name">${esc(b.name)}</span>
+          <span class="rate-badge">${esc(r5)}</span>
+          <span class="rate-badge">${esc(bannerRatesSummary(b))}</span>
+          <button data-remove-banner="${id}" title="ลบตู้">×</button>
+        </li>`;
+      }).join("")
+    : `<li class="hint small">ยังไม่มีตู้ — เพิ่มด้านบน</li>`;
 }
 
 function renderSettingsForm() {
   const s = state.settings;
-  document.getElementById("setEvRate").value = s.evRate;
-  document.getElementById("setEvCategory").value = s.evCategory;
-  document.getElementById("setMetaBonus").value = s.metaBonus;
-  document.getElementById("setMaxDifficulty").value = s.maxDifficulty;
+  document.getElementById("setMetaBonus").value   = s.metaBonus;
   document.getElementById("setMonthlyPoint").value = s.monthlyPoint;
 
-  const baseRows = document.getElementById("baseScoreRows");
-  baseRows.innerHTML = CATEGORIES.map(
-    (c) => `<div class="kv-row"><span>${c.label}</span><input type="number" data-base="${c.key}" value="${s.baseScores[c.key]}"></div>`
+  document.getElementById("baseScoreRows").innerHTML = CATEGORIES.map(c =>
+    `<div class="kv-row"><span>${c.label}</span>
+     <input type="number" data-base="${c.key}" value="${s.baseScores[c.key]}"></div>`
   ).join("");
 
-  const dupRows = document.getElementById("dupWeightRows");
-  dupRows.innerHTML = [0, 1, 2, 3].map(
-    (i) => `<div class="kv-row"><span>ดุ๊ปที่ ${i}${i === 3 ? "+" : ""}</span><input type="number" step="0.05" data-dup="${i}" value="${s.dupWeights[i]}"></div>`
-  ).join("");
-
-  const diffDupRows = document.getElementById("diffDupWeightRows");
-  diffDupRows.innerHTML = [0, 1, 2, 3].map(
-    (i) => `<div class="kv-row"><span>ดุ๊ปที่ ${i}${i === 3 ? "+" : ""}</span><input type="number" step="0.05" data-diffdup="${i}" value="${s.diffDupWeights[i]}"></div>`
+  document.getElementById("dupWeightRows").innerHTML = [0,1,2,3].map(i =>
+    `<div class="kv-row"><span>ดุ๊ปที่ ${i}${i===3?"+":""}</span>
+     <input type="number" step="0.05" data-dup="${i}" value="${s.dupWeights[i]}"></div>`
   ).join("");
 }
 
 function renderStageTable() {
-  const tbody = document.getElementById("stageBody");
-  const stages = state.settings.stages || {};
+  const tbody   = document.getElementById("stageBody");
+  const stages  = state.settings.stages || {};
   const entries = Object.entries(stages);
   tbody.innerHTML = entries.length
-    ? entries
-        .map(([id, st]) => {
-          const pts = stagePointsOf(st, state.settings);
-          return `<tr>
-            <td class="name">${esc(st.name)}</td>
-            <td>${fmt(st.weight, 2)}</td>
-            <td>${st.monthly ? "✔" : "—"}</td>
-            <td>${fmt(pts, 1)}</td>
-            <td><button class="icon-btn" data-remove-stage="${id}" title="ลบด่าน">×</button></td>
-          </tr>`;
-        })
-        .join("")
-    : `<tr><td colspan="5" class="empty-hint">ยังไม่มีด่าน — เพิ่มด้านบน</td></tr>`;
+    ? entries.map(([id, st]) => {
+        const diffDisplay = st.difficulty !== undefined ? st.difficulty : `${fmt(st.weight, 2)} (เก่า)`;
+        const pts = stagePointsOf(st, state.settings);
+        return `<tr>
+          <td class="name">${esc(st.name)}</td>
+          <td>${diffDisplay}</td>
+          <td>${st.monthly ? "✔" : "—"}</td>
+          <td>${fmt(pts, 0)}</td>
+          <td><button class="icon-btn" data-remove-stage="${id}" title="ลบ">×</button></td>
+        </tr>`;
+      }).join("")
+    : `<tr><td colspan="5" class="empty-hint">ยังไม่มีด่าน</td></tr>`;
 }
-
 function renderRollLogTable() {
   const tbody = document.getElementById("rollLogBody");
-  const rows = Object.values(state.rollLog).sort((a, b) => b.ts - a.ts).slice(0, 100);
+  const rows  = Object.values(state.rollLog).sort((a, b) => b.ts - a.ts).slice(0, 100);
   tbody.innerHTML = rows.length
-    ? rows.map((r) => `<tr><td>${fmtDate(r.ts)}</td><td class="name">${esc(r.player)}</td><td>${r.rolls}</td></tr>`).join("")
-    : `<tr><td colspan="3" class="empty-hint">ยังไม่มีข้อมูล</td></tr>`;
+    ? rows.map(r => {
+        const banner     = r.bannerId && state.banners[r.bannerId];
+        const bannerName = banner ? esc(banner.name) : `<span class="hint small">—</span>`;
+        return `<tr>
+          <td>${fmtDate(r.ts)}</td>
+          <td class="name">${esc(r.player)}</td>
+          <td class="name">${bannerName}</td>
+          <td>${r.rolls}</td>
+          <td>${r.hoshi ? '<span class="hoshi-badge">โฮชิ</span>' : '—'}</td>
+        </tr>`;
+      }).join("")
+    : `<tr><td colspan="5" class="empty-hint">ยังไม่มีข้อมูล</td></tr>`;
+}
+
+function buildScoreTip(p, s) {
+  const base  = s.baseScores[p.category] || 0;
+  const meta  = p.meta ? (s.metaBonus || 0) : 0;
+  const dupW  = s.dupWeights[Math.min(Number(p.dupTier), 3)] ?? 0;
+  const charPts = (base + meta) * dupW;
+
+  const baseStr = meta > 0 ? `(${base} + Meta ${meta})` : `${base}`;
+  let lines = [
+    `${baseStr} × dup ${dupW}  =  ${fmt(charPts, 1)} pts`,
+  ];
+
+  let stagePts = 0;
+  if (p.stageId && p.stageApplies !== false && s.stages?.[p.stageId]) {
+    const st = s.stages[p.stageId];
+    const diff = st.difficulty !== undefined ? Number(st.difficulty) : Math.round((st.weight || 0) * 20);
+    const monthly = st.monthly ? (s.monthlyPoint || 0) : 0;
+    stagePts = diff + monthly;
+    const monthlyStr = monthly > 0 ? ` + monthly ${monthly}` : "";
+    lines.push(`+ ด่าน "${st.name}"  ยาก ${diff}${monthlyStr}  =  +${stagePts} pts`);
+  } else if (p.stageId && p.stageApplies === false) {
+    lines.push(`ด่าน: ซ้ำ — ไม่ได้แต้มด่าน`);
+  }
+
+  const total = charPts + stagePts;
+  lines.push(`─────────────────────`);
+  lines.push(`รวม  ${fmt(total, 1)} pts`);
+  return lines.join("\n");
 }
 
 function renderPullLogTable() {
   const tbody = document.getElementById("pullLogBody");
-  const s = state.settings;
-  const rows = Object.values(state.pullLog).sort((a, b) => b.ts - a.ts).slice(0, 100);
+  if (!tbody) return;
+  const s    = state.settings;
+  const rows = Object.values(state.pullLog).sort((a, b) => b.ts - a.ts).slice(0, 300);
   tbody.innerHTML = rows.length
-    ? rows
-        .map((p) => {
-          const catLabel = CATEGORIES.find((c) => c.key === p.category)?.label || p.category;
-          const stageLabel = p.stageId && s.stages && s.stages[p.stageId] ? s.stages[p.stageId].name : "—";
-          return `<tr>
-            <td>${fmtDate(p.ts)}</td>
-            <td class="name">${esc(p.player)}</td>
-            <td>${esc(catLabel)}</td>
-            <td>${p.dupTier}${p.dupTier >= 3 ? "+" : ""}</td>
-            <td>${p.meta ? "✔" : "—"}</td>
-            <td>${esc(stageLabel)}</td>
-            <td>${fmt(pullScore(p, s), 2)}</td>
-          </tr>`;
-        })
-        .join("")
-    : `<tr><td colspan="7" class="empty-hint">ยังไม่มีข้อมูล</td></tr>`;
+    ? rows.map(p => {
+        const cat       = CATEGORIES.find(c => c.key === p.category)?.label || p.category;
+        const stage     = p.stageId && s.stages?.[p.stageId];
+        const stageName = stage ? esc(stage.name) : `<span class="hint small">—</span>`;
+        const stageGot  = p.stageId ? (p.stageApplies !== false ? "✔" : "✘") : "—";
+        const dupLabel  = `${p.dupTier}${Number(p.dupTier) >= 3 ? "+" : ""}`;
+        const score     = pullScore(p, s);
+        const tipText   = esc(buildScoreTip(p, s));
+        return `<tr>
+          <td>${fmtDate(p.ts)}</td>
+          <td class="name">${esc(p.player)}</td>
+          <td class="name charname-cell">${p.charName ? esc(p.charName) : '<span class="hint small">—</span>'}</td>
+          <td>${esc(cat)}</td>
+          <td>${dupLabel}</td>
+          <td>${p.meta ? "✔" : "—"}</td>
+          <td class="name">${stageName}</td>
+          <td>${stageGot}</td>
+          <td class="score-cell tip-wrap">
+            <span class="score-num">${fmt(score, 1)}</span>
+            <div class="tip-box">${tipText}</div>
+          </td>
+        </tr>`;
+      }).join("")
+    : `<tr><td colspan="9" class="empty-hint">ยังไม่มีตัวละครที่บันทึก</td></tr>`;
+}
+
+
+function buildExpectedTip(breakdown, expectedPoints) {
+  if (!breakdown.length) return esc("ยังไม่มีข้อมูลตู้");
+  const parts = [];
+  for (const bd of breakdown) {
+    parts.push(`[${bd.name}  ×  ${bd.rolls} โรล]`);
+    for (const re of bd.rateEntries) {
+      parts.push(`  ${re.label}  ${re.rate}% × ${re.base}pts = ${fmt(re.perRoll, 4)}/roll → ${fmt(re.total, 1)}`);
+    }
+    parts.push(`  รวมตู้นี้:  ${fmt(bd.total, 1)} pts`);
+    parts.push("─────────────────────────────────────────");
+  }
+  parts.push(`รวมทั้งหมด  ${fmt(expectedPoints, 1)} pts`);
+  parts.push("");
+  parts.push("สูตร: rolls × rate% × Base score");
+  parts.push("(รวมโฮชิ · ไม่รวม Meta / ด่าน / ดุ๊ป)");
+  return esc(parts.join("\n"));
 }
 
 function renderDashboard() {
-  const names = playerNames();
-  const tbody = document.getElementById("dashboardBody");
+  const names     = playerNames();
+  const tbody     = document.getElementById("dashboardBody");
   const emptyHint = document.getElementById("dashboardEmpty");
 
-  const stats = names.map(computePlayerStats).filter((st) => st.totalRolls > 0);
+  const stats = names.map(computePlayerStats).filter(st => st.totalRolls > 0);
 
   if (!stats.length) {
     tbody.innerHTML = "";
@@ -405,136 +528,305 @@ function renderDashboard() {
   emptyHint.hidden = true;
 
   const sortedByZ = [...stats].sort((a, b) => a.z - b.z);
-  const rankOf = new Map(sortedByZ.map((st, i) => [st.player, i + 1]));
+  const rankOf    = new Map(sortedByZ.map((st, i) => [st.player, i + 1]));
 
-  tbody.innerHTML = stats
-    .map((st) => {
-      const rank = rankOf.get(st.player);
-      const zClass = st.z <= -2 ? "z-bad" : st.z >= 2 ? "z-good" : "";
-      const rankClass = rank === 1 ? "rank-1" : "";
-      return `<tr>
-        <td class="name">${esc(st.player)}</td>
-        <td>${st.totalRolls}</td>
-        <td>${st.evHits}</td>
-        <td>${fmt(st.expectedHits, 1)}</td>
-        <td>${fmt(st.actualPoints, 1)}</td>
-        <td>${fmt(st.expectedPoints, 1)}</td>
-        <td>${fmt(st.deviation, 1)}</td>
-        <td class="${zClass}">${fmt(st.z, 2)}</td>
-        <td class="${rankClass}">${rank}</td>
-      </tr>`;
-    })
-    .join("");
+  tbody.innerHTML = stats.map(st => {
+    const rank      = rankOf.get(st.player);
+    const zClass    = st.z <= -2 ? "z-bad" : st.z >= 2 ? "z-good" : "";
+    const rankClass = rank === 1 ? "rank-1" : "";
+    const devClass  = st.deviation < 0 ? "z-bad" : st.deviation > 0 ? "z-good" : "";
+    const expTip    = buildExpectedTip(st.breakdown, st.expectedPoints);
+    return `<tr>
+      <td class="name">${esc(st.player)}</td>
+      <td>${st.totalRolls}</td>
+      <td>${st.actualHits}</td>
+      <td>${fmt(st.actualPoints, 1)}</td>
+      <td class="tip-wrap">${fmt(st.expectedPoints, 1)}<div class="tip-box exp-tip">${expTip}</div></td>
+      <td class="${devClass}">${fmt(st.deviation, 1)}</td>
+      <td class="${zClass}">${fmt(st.z, 2)}</td>
+      <td class="${rankClass}">${rank}</td>
+    </tr>`;
+  }).join("");
 }
 
 function esc(str) {
-  return String(str).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+  return String(str).replace(/[&<>"']/g, c =>
+    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c])
+  );
+}
+
+// -------------------------------------------------------------------------
+// Session pull rows (ตัวละครที่ได้ในเซสชันนี้ก่อนกดบันทึก)
+// -------------------------------------------------------------------------
+function buildSessionPullRow() {
+  const stages    = state.settings.stages || {};
+  const stageOpts = Object.entries(stages)
+    .map(([id, st]) => `<option value="${id}">${esc(st.name)}</option>`)
+    .join("");
+
+  const row = document.createElement("div");
+  row.className = "sp-row";
+  row.innerHTML = `
+    <input type="text" class="sp-charname" placeholder="ชื่อตัวละคร">
+    <select class="sp-cat">
+      ${CATEGORIES.map(c => `<option value="${c.key}">${c.label}</option>`).join("")}
+    </select>
+    <select class="sp-dup">
+      <option value="0">ดุ๊ป 0 (ใหม่)</option>
+      <option value="1">ดุ๊ป 1</option>
+      <option value="2">ดุ๊ป 2</option>
+      <option value="3">ดุ๊ป 3+</option>
+    </select>
+    <label class="sp-meta-label"><input type="checkbox" class="sp-meta"> Meta</label>
+    <select class="sp-stage">
+      <option value="">— ไม่มีด่าน —</option>
+      ${stageOpts}
+    </select>
+    <label class="sp-meta-label sp-stage-bonus" style="display:none">
+      <input type="checkbox" class="sp-stage-applies" checked> ได้แต้มด่าน
+    </label>
+    <button type="button" class="sp-del icon-btn" title="ลบแถวนี้">×</button>
+  `;
+  const stageSelect  = row.querySelector(".sp-stage");
+  const stageBonusLbl = row.querySelector(".sp-stage-bonus");
+  stageSelect.addEventListener("change", () => {
+    stageBonusLbl.style.display = stageSelect.value ? "" : "none";
+  });
+  row.querySelector(".sp-del").addEventListener("click", () => row.remove());
+  return row;
+}
+
+// -------------------------------------------------------------------------
+// Banner rate row builder (for settings form)
+// -------------------------------------------------------------------------
+function addBannerRateRow(defaultCat = "", defaultRate = "") {
+  const container = document.getElementById("bannerRateRows");
+  const div = document.createElement("div");
+  div.className = "banner-rate-row";
+  div.innerHTML = `
+    <select class="br-cat">
+      ${CATEGORIES.map(c =>
+        `<option value="${c.key}"${c.key === defaultCat ? " selected" : ""}>${c.label}</option>`
+      ).join("")}
+    </select>
+    <input type="number" class="br-rate" placeholder="%" step="0.1" min="0" max="100"
+           value="${defaultRate}">
+    <button type="button" class="br-del icon-btn" title="ลบ">×</button>
+  `;
+  div.querySelector(".br-del").addEventListener("click", () => div.remove());
+  container.appendChild(div);
 }
 
 // -------------------------------------------------------------------------
 // Event wiring
 // -------------------------------------------------------------------------
 document.addEventListener("DOMContentLoaded", () => {
-  // tabs
-  document.querySelectorAll(".tab-btn").forEach((btn) => {
+
+  // ── Tabs ──────────────────────────────────────────────────────────────
+  document.querySelectorAll(".tab-btn").forEach(btn => {
     btn.addEventListener("click", () => {
-      document.querySelectorAll(".tab-btn").forEach((b) => b.classList.remove("active"));
-      document.querySelectorAll(".tab-panel").forEach((p) => p.classList.remove("active"));
+      document.querySelectorAll(".tab-btn").forEach(b => b.classList.remove("active"));
+      document.querySelectorAll(".tab-panel").forEach(p => p.classList.remove("active"));
       btn.classList.add("active");
       document.getElementById("tab-" + btn.dataset.tab).classList.add("active");
     });
   });
 
-  document.getElementById("rollForm").addEventListener("submit", (e) => {
-    e.preventDefault();
-    const player = document.getElementById("rollPlayerSelect").value;
-    const rolls = Number(document.getElementById("rollCount").value);
-    if (!player || !rolls || rolls <= 0) return;
-    addRollEntry({ player, rolls });
-    e.target.reset();
-    document.getElementById("rollCount").value = 10;
+  // ── Session pull: เพิ่มแถว ────────────────────────────────────────────
+  document.getElementById("addSessionPullBtn").addEventListener("click", () => {
+    document.getElementById("sessionPullList").appendChild(buildSessionPullRow());
   });
 
-  document.getElementById("pullForm").addEventListener("submit", (e) => {
-    e.preventDefault();
-    const player = document.getElementById("pullPlayerSelect").value;
-    if (!player) return;
-    addPullEntry({
-      player,
-      category: document.getElementById("pullCategory").value,
-      dupTier: Number(document.getElementById("pullDup").value),
-      meta: document.getElementById("pullMeta").checked,
-      stageId: document.getElementById("pullStage").value || null,
-    });
-    document.getElementById("pullMeta").checked = false;
-    document.getElementById("pullStage").value = "";
+  // ── โฮชิ checkbox: ล็อคโรลให้เป็น 1 เสมอ ─────────────────────────────
+  document.getElementById("rollHoshi").addEventListener("change", e => {
+    const countInput = document.getElementById("rollCount");
+    if (e.target.checked) {
+      countInput.value    = 1;
+      countInput.disabled = true;
+    } else {
+      countInput.disabled = false;
+    }
   });
 
-  document.getElementById("playerForm").addEventListener("submit", (e) => {
+  // ── Roll form (บันทึกโรล + session pulls พร้อมกัน) ───────────────────
+  document.getElementById("rollForm").addEventListener("submit", e => {
+    e.preventDefault();
+    const player   = document.getElementById("rollPlayerSelect").value;
+    const bannerId = document.getElementById("rollBannerSelect").value;
+    const hoshi    = document.getElementById("rollHoshi").checked;
+    const rolls    = hoshi ? 1 : Number(document.getElementById("rollCount").value);
+    if (!player || !bannerId || !rolls || rolls <= 0) return;
+
+    // รวบรวม session pulls — กรอง Normal ที่ไม่มีด่านออก
+    const spRows    = [...document.getElementById("sessionPullList").querySelectorAll(".sp-row")];
+    const pullItems = spRows
+      .map((row, i) => {
+        const stageId = row.querySelector(".sp-stage").value || null;
+        const stageApplies = stageId
+          ? row.querySelector(".sp-stage-applies").checked
+          : true;
+        return {
+          player,
+          bannerId,
+          charName: row.querySelector(".sp-charname").value.trim(),
+          category: row.querySelector(".sp-cat").value,
+          dupTier:  Number(row.querySelector(".sp-dup").value),
+          meta:     row.querySelector(".sp-meta").checked,
+          stageId,
+          stageApplies,
+          ts:       Date.now() + i + 1,
+        };
+      })
+      .filter(item => item.category === "collab" || item.stageId);
+
+    // ── ยืนยันก่อนบันทึก ────────────────────────────────────────────────
+    const bannerObj   = state.banners[bannerId];
+    const bannerLabel = bannerObj ? `${bannerObj.name} (${bannerRatesSummary(bannerObj)})` : "ไม่ระบุ";
+    const hoshiLabel  = hoshi ? "  🌟 โฮชิ\n" : "";
+    const pullSummary = pullItems.length
+      ? pullItems.map(p => {
+          const cat = CATEGORIES.find(c => c.key === p.category)?.label || p.category;
+          const nameStr = p.charName ? `${p.charName} — ` : "";
+          return `  • ${nameStr}${cat} ดุ๊ป${p.dupTier}${p.meta ? " [Meta]" : ""}${p.stageId ? " [มีด่าน]" : ""}`;
+        }).join("\n")
+      : "  (ไม่มีตัวที่ได้)";
+
+    const msg = [
+      "บันทึกข้อมูลต่อไปนี้?",
+      "",
+      `ผู้เล่น : ${player}`,
+      `ตู้      : ${bannerLabel}`,
+      `โรล     : ${rolls}`,
+      hoshiLabel.trim() ? hoshiLabel.trim() : null,
+      "",
+      "ตัวที่ได้:",
+      pullSummary,
+      "",
+      "⚠️  บันทึกแล้วแก้ไขย้อนหลังไม่ได้",
+    ].filter(l => l !== null).join("\n");
+
+    if (!confirm(msg)) return;
+
+    // ── บันทึก ────────────────────────────────────────────────────────────
+    if (mode === "firebase") {
+      db.ref("rollLog").push({ player, bannerId, rolls, hoshi, ts: Date.now() });
+      pullItems.forEach(p => db.ref("pullLog").push(p));
+    } else {
+      state.rollLog[uid()] = { player, bannerId, rolls, hoshi, ts: Date.now() };
+      pullItems.forEach(p => { state.pullLog[uid()] = p; });
+      saveLocal();
+      render();
+    }
+
+    document.getElementById("sessionPullList").innerHTML = "";
+    document.getElementById("rollCount").value           = 1;
+    document.getElementById("rollCount").disabled        = false;
+    document.getElementById("rollHoshi").checked         = false;
+  });
+
+
+  // ── Player form ────────────────────────────────────────────────────────
+  document.getElementById("playerForm").addEventListener("submit", e => {
     e.preventDefault();
     const input = document.getElementById("newPlayerName");
-    const name = input.value.trim();
+    const name  = input.value.trim();
     if (!name) return;
-    if (playerNames().includes(name)) {
-      alert("มีชื่อนี้อยู่แล้ว");
-      return;
-    }
+    if (playerNames().includes(name)) { alert("มีชื่อนี้อยู่แล้ว"); return; }
     addPlayer(name);
     input.value = "";
   });
 
-  document.getElementById("playerList").addEventListener("click", (e) => {
+  document.getElementById("playerList").addEventListener("click", e => {
     const id = e.target.dataset.removePlayer;
-    if (id && confirm("ลบผู้เล่นนี้? (ประวัติ log เดิมจะยังอยู่แต่จะไม่โผล่ในดรอปดาวน์)")) removePlayer(id);
+    if (id && confirm("ลบผู้เล่นนี้? (ประวัติ log เดิมจะยังอยู่แต่จะไม่โผล่ในดรอปดาวน์)"))
+      removePlayer(id);
   });
 
-  document.getElementById("stageForm").addEventListener("submit", (e) => {
+  // ── Banner rate add button ─────────────────────────────────────────────
+  document.getElementById("addBannerRateBtn").addEventListener("click", () => {
+    addBannerRateRow();
+  });
+
+  // ── Banner form submit ─────────────────────────────────────────────────
+  document.getElementById("bannerForm").addEventListener("submit", e => {
     e.preventDefault();
-    const name = document.getElementById("stageName").value.trim();
-    const weight = Number(document.getElementById("stageWeight").value);
-    const monthly = document.getElementById("stageMonthly").checked;
-    if (!name || weight < 0 || weight > 1) return;
-    addStage({ name, weight, monthly });
+    const name = document.getElementById("bannerName").value.trim();
+    if (!name) return;
+
+    const rateRows = [...document.querySelectorAll("#bannerRateRows .banner-rate-row")];
+    const rates    = rateRows
+      .map(row => ({
+        category: row.querySelector(".br-cat").value,
+        rate:     Number(row.querySelector(".br-rate").value || 0),
+      }))
+      .filter(r => r.rate > 0);
+
+    if (!rates.length) {
+      alert("กรุณาใส่อัตรา (%) อย่างน้อย 1 ประเภท");
+      return;
+    }
+
+    const rate5star  = Number(document.getElementById("bannerRate5star").value || 12);
+    const totalRate  = rates.reduce((sum, r) => sum + r.rate, 0);
+    if (totalRate > rate5star) {
+      alert(`อัตรารวม (${fmt(totalRate, 2)}%) เกินอัตรา 5★+ (${rate5star}%) — กรุณาตรวจสอบ`);
+      return;
+    }
+
+    addBanner({ name, rate5star, rates });
+    document.getElementById("bannerName").value         = "";
+    document.getElementById("bannerRate5star").value    = "12";
+    document.getElementById("bannerRateRows").innerHTML = "";
+    addBannerRateRow(); // reset with one empty row
+  });
+
+  document.getElementById("bannerList").addEventListener("click", e => {
+    const id = e.target.dataset.removeBanner;
+    if (id && confirm("ลบตู้นี้? (roll/pull log ที่อ้างถึงตู้นี้จะยังอยู่แต่จะไม่มีชื่อตู้)"))
+      removeBanner(id);
+  });
+
+  // ── Stage form ────────────────────────────────────────────────────────
+  document.getElementById("stageForm").addEventListener("submit", e => {
+    e.preventDefault();
+    const name       = document.getElementById("stageName").value.trim();
+    const difficulty = Number(document.getElementById("stageDifficulty").value);
+    const monthly    = document.getElementById("stageMonthly").checked;
+    if (!name || difficulty < 1 || difficulty > 20) return;
+    addStage({ name, difficulty, monthly });
     e.target.reset();
   });
 
-  document.getElementById("stageBody").addEventListener("click", (e) => {
+  document.getElementById("stageBody").addEventListener("click", e => {
     const id = e.target.dataset.removeStage;
     if (id && confirm("ลบด่านนี้?")) removeStage(id);
   });
 
-  // settings live-edit
-  const bindSetting = (id, path, isNumber = true) => {
-    document.getElementById(id).addEventListener("change", (e) => {
-      const v = isNumber ? Number(e.target.value) : e.target.value;
-      path(v);
+  // ── Settings live-edit ────────────────────────────────────────────────
+  const bindSetting = (id, setter, isNumber = true) => {
+    document.getElementById(id).addEventListener("change", e => {
+      setter(isNumber ? Number(e.target.value) : e.target.value);
       persistSettings();
     });
   };
-  bindSetting("setEvRate", (v) => (state.settings.evRate = v));
-  bindSetting("setEvCategory", (v) => (state.settings.evCategory = v), false);
-  bindSetting("setMetaBonus", (v) => (state.settings.metaBonus = v));
-  bindSetting("setMaxDifficulty", (v) => (state.settings.maxDifficulty = v));
-  bindSetting("setMonthlyPoint", (v) => (state.settings.monthlyPoint = v));
+  bindSetting("setMetaBonus",    v => (state.settings.metaBonus   = v));
+  bindSetting("setMonthlyPoint", v => (state.settings.monthlyPoint = v));
 
-  document.getElementById("baseScoreRows").addEventListener("change", (e) => {
+  document.getElementById("baseScoreRows").addEventListener("change", e => {
     const key = e.target.dataset.base;
     if (!key) return;
     state.settings.baseScores[key] = Number(e.target.value);
     persistSettings();
   });
-  document.getElementById("dupWeightRows").addEventListener("change", (e) => {
+  document.getElementById("dupWeightRows").addEventListener("change", e => {
     const i = e.target.dataset.dup;
     if (i === undefined) return;
     state.settings.dupWeights[Number(i)] = Number(e.target.value);
     persistSettings();
   });
-  document.getElementById("diffDupWeightRows").addEventListener("change", (e) => {
-    const i = e.target.dataset.diffdup;
-    if (i === undefined) return;
-    state.settings.diffDupWeights[Number(i)] = Number(e.target.value);
-    persistSettings();
-  });
+
+  // ── Initial empty banner rate row ─────────────────────────────────────
+  addBannerRateRow();
 
   initStore();
 });
