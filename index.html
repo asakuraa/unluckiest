@@ -1,0 +1,210 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Gacha Luck Tracker — Monster Strike</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Baloo+2:wght@600;700;800&family=Sarabun:wght@400;500;600;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<header class="topbar">
+  <div class="topbar-inner">
+    <h1><span class="dot"></span> Gacha Luck Tracker</h1>
+    <div id="connStatus" class="conn-status conn-local">โหมด: กำลังโหลด…</div>
+  </div>
+</header>
+
+<nav class="tabs">
+  <button class="tab-btn active" data-tab="dashboard">แดชบอร์ด</button>
+  <button class="tab-btn" data-tab="logroll">บันทึกโรล</button>
+  <button class="tab-btn" data-tab="logpull">บันทึกตัวที่ได้</button>
+  <button class="tab-btn" data-tab="settings">ตั้งค่า</button>
+</nav>
+
+<main class="container">
+
+  <!-- ================= DASHBOARD ================= -->
+  <section id="tab-dashboard" class="tab-panel active">
+    <div class="panel-head">
+      <h2>เปรียบเทียบดวงผู้เล่น</h2>
+      <p class="hint">Z-score ยิ่งติดลบมาก = ยิ่งซวย เทียบกับค่าเฉลี่ยตามอัตราตู้ที่ตั้งไว้</p>
+    </div>
+    <div class="table-scroll">
+      <table id="dashboardTable">
+        <thead>
+          <tr>
+            <th>ผู้เล่น</th>
+            <th>โรลรวม</th>
+            <th>ออก (EV cat.)</th>
+            <th>คาดว่าจะออก</th>
+            <th>แต้มจริง</th>
+            <th>แต้มคาดหวัง</th>
+            <th>ส่วนต่างแต้ม</th>
+            <th>Z-score</th>
+            <th>อันดับซวย</th>
+          </tr>
+        </thead>
+        <tbody id="dashboardBody"></tbody>
+      </table>
+    </div>
+    <p id="dashboardEmpty" class="empty-hint" hidden>ยังไม่มีข้อมูล — ไปที่แท็บ “บันทึกโรล” เพื่อเริ่มเก็บสถิติ</p>
+  </section>
+
+  <!-- ================= LOG ROLL ================= -->
+  <section id="tab-logroll" class="tab-panel">
+    <div class="panel-head">
+      <h2>บันทึกจำนวนโรล</h2>
+      <p class="hint">กดทุกครั้งที่เปิดกาชา ระบบจะบวกสะสมให้อัตโนมัติ (แก้ไขย้อนหลังไม่ได้ — บันทึกใหม่เพื่อแก้ผิดพลาด)</p>
+    </div>
+    <form id="rollForm" class="form-grid">
+      <label>ผู้เล่น
+        <select id="rollPlayerSelect" required></select>
+      </label>
+      <label>จำนวนโรล
+        <input type="number" id="rollCount" min="1" max="5000" value="10" required>
+      </label>
+      <button type="submit" class="btn-primary">+ บันทึก</button>
+    </form>
+    <div class="table-scroll">
+      <table>
+        <thead><tr><th>เวลา</th><th>ผู้เล่น</th><th>จำนวนโรล</th></tr></thead>
+        <tbody id="rollLogBody"></tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- ================= LOG PULL ================= -->
+  <section id="tab-logpull" class="tab-panel">
+    <div class="panel-head">
+      <h2>บันทึกตัวละครที่ได้</h2>
+      <p class="hint">ใช้บันทึกทุกครั้งที่ได้ตัวที่นับแต้ม (limit/collab/alpha ฯลฯ) เพื่อคิดคะแนนตามสูตร</p>
+    </div>
+    <form id="pullForm" class="form-grid">
+      <label>ผู้เล่น
+        <select id="pullPlayerSelect" required></select>
+      </label>
+      <label>ประเภทตัวละคร
+        <select id="pullCategory" required></select>
+      </label>
+      <label>ดุ๊ปที่เท่าไหร่
+        <select id="pullDup">
+          <option value="0">0 (ตัวใหม่)</option>
+          <option value="1">1</option>
+          <option value="2">2</option>
+          <option value="3">3+</option>
+        </select>
+      </label>
+      <label class="checkbox-line">
+        <input type="checkbox" id="pullMeta"> เป็นตัวเมต้า
+      </label>
+      <label>ด่านที่ลงได้ (ถ้ามี)
+        <select id="pullStage">
+          <option value="">— ไม่มี / ยังลงไม่ได้ —</option>
+        </select>
+      </label>
+      <button type="submit" class="btn-primary">+ บันทึก</button>
+    </form>
+    <div class="table-scroll">
+      <table>
+        <thead><tr><th>เวลา</th><th>ผู้เล่น</th><th>ประเภท</th><th>ดุ๊ป</th><th>เมต้า</th><th>ด่าน</th><th>แต้มที่ได้</th></tr></thead>
+        <tbody id="pullLogBody"></tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- ================= SETTINGS ================= -->
+  <section id="tab-settings" class="tab-panel">
+    <div class="panel-head">
+      <h2>ตั้งค่าโมเดลคะแนน</h2>
+      <p class="hint">แก้ค่าตรงนี้เมื่อตู้เปลี่ยน / มีด่านใหม่ ค่าจะมีผลกับการคำนวณทั้งหมดทันที</p>
+    </div>
+
+    <div class="settings-grid">
+
+      <div class="card">
+        <h3>ผู้เล่น</h3>
+        <form id="playerForm" class="inline-form">
+          <input type="text" id="newPlayerName" placeholder="ชื่อผู้เล่นใหม่" required>
+          <button type="submit" class="btn-secondary">+ เพิ่ม</button>
+        </form>
+        <ul id="playerList" class="chip-list"></ul>
+      </div>
+
+      <div class="card">
+        <h3>อัตราตู้ &amp; EV</h3>
+        <label class="row">อัตราออกของตู้ (%)
+          <input type="number" id="setEvRate" step="0.1" min="0" max="100">
+        </label>
+        <label class="row">ประเภทที่ใช้คิด EV/Z-score
+          <select id="setEvCategory"></select>
+        </label>
+        <p class="hint small">EV/โรล = อัตรา × Base ของประเภทที่เลือก</p>
+      </div>
+
+      <div class="card">
+        <h3>คะแนน Base ตามประเภท</h3>
+        <div id="baseScoreRows" class="kv-rows"></div>
+      </div>
+
+      <div class="card">
+        <h3>Duplicate Weight</h3>
+        <div id="dupWeightRows" class="kv-rows"></div>
+        <p class="hint small">คูณกับ (Base + Meta bonus)</p>
+      </div>
+
+      <div class="card">
+        <h3>โบนัสอื่น ๆ</h3>
+        <label class="row">Meta bonus
+          <input type="number" id="setMetaBonus" min="0">
+        </label>
+        <label class="row">Difficulty bonus สูงสุด
+          <input type="number" id="setMaxDifficulty" min="0">
+        </label>
+        <label class="row">Monthly point
+          <input type="number" id="setMonthlyPoint" min="0">
+        </label>
+      </div>
+
+      <div class="card">
+        <h3>Difficulty Dup Weight</h3>
+        <div id="diffDupWeightRows" class="kv-rows"></div>
+        <p class="hint small">คูณกับ (Difficulty bonus + Monthly point)</p>
+      </div>
+
+      <div class="card card-wide">
+        <h3>รายการด่านยาก</h3>
+        <p class="hint small">weight 0–1 คูณกับ Difficulty bonus สูงสุด · ติ๊ก Monthly ถ้าเป็นด่านประจำเดือน (เช่น หอดาว)</p>
+        <form id="stageForm" class="stage-form">
+          <input type="text" id="stageName" placeholder="ชื่อด่าน" required>
+          <input type="number" id="stageWeight" placeholder="weight (0-1)" step="0.05" min="0" max="1" required>
+          <label class="checkbox-line"><input type="checkbox" id="stageMonthly"> Monthly</label>
+          <button type="submit" class="btn-secondary">+ เพิ่มด่าน</button>
+        </form>
+        <div class="table-scroll">
+          <table>
+            <thead><tr><th>ชื่อด่าน</th><th>Weight</th><th>Monthly</th><th>แต้ม difficulty ที่ได้</th><th></th></tr></thead>
+            <tbody id="stageBody"></tbody>
+          </table>
+        </div>
+      </div>
+
+    </div>
+  </section>
+
+</main>
+
+<footer class="footer">
+  <p>ข้อมูลถูกเก็บแบบ append-only (แก้ log ย้อนหลังไม่ได้ ผิดแล้วบันทึกใหม่แทน) · <span id="footerMode"></span></p>
+</footer>
+
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-database-compat.js"></script>
+<script src="firebase-config.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

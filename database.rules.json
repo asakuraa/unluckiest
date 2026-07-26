@@ -1,0 +1,28 @@
+{
+  "rules": {
+    ".read": "auth != null",
+    ".write": "auth != null",
+
+    "settings": {
+      ".validate": true
+    },
+
+    "players": {
+      "$playerId": {
+        ".validate": "newData.hasChildren(['name'])"
+      }
+    },
+
+    "rollLog": {
+      "$entryId": {
+        ".validate": "!data.exists() && newData.hasChildren(['player','rolls','ts']) && newData.child('rolls').isNumber() && newData.child('rolls').val() > 0 && newData.child('rolls').val() <= 5000"
+      }
+    },
+
+    "pullLog": {
+      "$entryId": {
+        ".validate": "!data.exists() && newData.hasChildren(['player','category','dupTier','ts']) && newData.child('dupTier').isNumber() && newData.child('dupTier').val() >= 0 && newData.child('dupTier').val() <= 3"
+      }
+    }
+  }
+}
