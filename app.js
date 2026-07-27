@@ -197,13 +197,25 @@ function removeBanner(id) {
 }
 
 function addCharacter(char) {
-  const id = uid();
-  if (mode === "firebase") db.ref("characters/" + id).set(char);
-  else { state.characters[id] = char; saveLocal(); render(); }
+   const id = uid();
+   if (mode === "firebase") {
+     state.characters[id] = char;
+     db.ref("characters/" + id).set(char);
+   } else {
+     state.characters[id] = char;
+     saveLocal();
+   }
+   render();
 }
 function updateCharacter(id, data) {
-  if (mode === "firebase") db.ref("characters/" + id).update(data);
-  else { state.characters[id] = { ...state.characters[id], ...data }; saveLocal(); render(); }
+   if (mode === "firebase") {
+     state.characters[id] = { ...state.characters[id], ...data };
+     db.ref("characters/" + id).update(data);
+   } else {
+     state.characters[id] = { ...state.characters[id], ...data };
+     saveLocal();
+   }
+   render();
 }
 function removeCharacter(id) {
   if (mode === "firebase") db.ref("characters/" + id).remove();
