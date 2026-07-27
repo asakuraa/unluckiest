@@ -1,13 +1,9 @@
 // =========================================================================
-// Gacha Luck Tracker — app.js v2  (ระบบโฮชิ + ตู้เป็น List)
-// state = {
-//   settings : { baseScores{}, dupWeights[4], diffDupWeights[4],
-//                metaBonus, maxDifficulty, monthlyPoint, stages:{} },
-//   banners  : { id: { name, collabRate } },
-//   players  : { id: { name } },
-//   rollLog  : { id: { player, bannerId, rolls, hoshi, ts } },
-//   pullLog  : { id: { player, bannerId, category, dupTier, meta, stageId, ts } }
-// }
+// Gacha Luck Tracker — app.js v3
+// + Character Database (เพิ่มตัวละครก่อน pull)
+// + Breaker factor (+10 default)
+// + Meta bonus → 20 default
+// + scoreSnapshot (คะแนนไม่เปลี่ยนตาม settings หลังบันทึก)
 // =========================================================================
 
 const CATEGORIES = [
@@ -18,7 +14,6 @@ const CATEGORIES = [
   { key: "otherLimit",   label: "Other limit" },
 ];
 
-// Normalize banner → always return rates[] (backward compat with old collabRate format)
 function getBannerRates(b) {
   if (!b) return [];
   if (Array.isArray(b.rates) && b.rates.length) return b.rates;
@@ -36,93 +31,90 @@ function bannerRatesSummary(b) {
     .join(" + ") || "—";
 }
 
-
 const DEFAULT_SETTINGS = {
-  baseScores:     { limitEndMid: 15, limitElement: 15, collab: 10, alpha: 10, otherLimit: 10 },
-  dupWeights:     [1, 0.6, 0.3, 0],
-  metaBonus:      10,
-  monthlyPoint:   5,
-  stages:         {},
+  baseScores:   { limitEndMid: 15, limitElement: 15, collab: 10, alpha: 10, otherLimit: 10 },
+  dupWeights:   [1, 0.6, 0.3, 0],
+  metaBonus:    20,
+  breakerBonus: 10,
+  monthlyPoint: 5,
+  stages:       {},
 };
 
 let state = {
-  settings: JSON.parse(JSON.stringify(DEFAULT_SETTINGS)),
-  banners:  {},
-  players:  {},
-  rollLog:  {},
-  pullLog:  {},
+  settings:   JSON.parse(JSON.stringify(DEFAULT_SETTINGS)),
+  banners:    {},
+  characters: {},
+  players:    {},
+  rollLog:    {},
+  pullLog:    {},
 };
 
-let mode = "local"; // "local" | "firebase"
+let mode = "local";
 let db   = null;
 
 // -------------------------------------------------------------------------
-// Auth (password gate)
+// Auth
 // -------------------------------------------------------------------------
-let sitePassword = null; // null = ยังไม่โหลดจาก DB
+let sitePassword = null;
 
-function checkSession() {
-  return sessionStorage.getItem("glAuthed") === "1";
-}
-
+function checkSession() { return sessionStorage.getItem("glAuthed") === "1"; }
 function resolveAuth(pw) {
   sitePassword = (pw && String(pw).trim()) || "1234";
   if (checkSession()) hideAuthOverlay();
 }
-
 function hideAuthOverlay() {
   const el = document.getElementById("authOverlay");
   if (el) el.hidden = true;
 }
 
 // -------------------------------------------------------------------------
-// Storage layer
+// Storage
 // -------------------------------------------------------------------------
-const LOCAL_KEY     = "gachaLuckStateV2";
+const LOCAL_KEY     = "gachaLuckStateV3";
+const LOCAL_KEY_V2  = "gachaLuckStateV2";
 const LOCAL_KEY_OLD = "gachaLuckState";
+
+function mergeSettings(val) {
+  const s = Object.assign({}, DEFAULT_SETTINGS, val || {});
+  s.baseScores = Object.assign({}, DEFAULT_SETTINGS.baseScores, (val || {}).baseScores || {});
+  s.stages     = (val || {}).stages || {};
+  return s;
+}
 
 function loadLocal() {
   try {
     let raw = localStorage.getItem(LOCAL_KEY);
+    if (!raw) raw = localStorage.getItem(LOCAL_KEY_V2);
 
     if (!raw) {
-      // ลองอ่านข้อมูลเก่า (v1) แล้ว migrate
       const oldRaw = localStorage.getItem(LOCAL_KEY_OLD);
       if (oldRaw) {
         const old = JSON.parse(oldRaw);
-        state.settings = Object.assign({}, DEFAULT_SETTINGS, old.settings || {});
-        state.settings.baseScores = Object.assign({}, DEFAULT_SETTINGS.baseScores, (old.settings || {}).baseScores || {});
-        state.settings.stages     = (old.settings || {}).stages || {};
-        state.players  = old.players  || {};
-        state.rollLog  = old.rollLog  || {};   // entries เก่าไม่มี bannerId — OK
-        state.pullLog  = old.pullLog  || {};
-        state.banners  = {};
+        state.settings   = mergeSettings(old.settings);
+        state.players    = old.players  || {};
+        state.rollLog    = old.rollLog  || {};
+        state.pullLog    = old.pullLog  || {};
+        state.banners    = {};
+        state.characters = {};
         saveLocal();
       }
     } else {
-      const parsed = JSON.parse(raw);
-      state.settings = Object.assign({}, DEFAULT_SETTINGS, parsed.settings || {});
-      state.settings.baseScores = Object.assign({}, DEFAULT_SETTINGS.baseScores, (parsed.settings || {}).baseScores || {});
-      state.settings.stages     = (parsed.settings || {}).stages || {};
-      state.banners  = parsed.banners  || {};
-      state.players  = parsed.players  || {};
-      state.rollLog  = parsed.rollLog  || {};
-      state.pullLog  = parsed.pullLog  || {};
+      const p = JSON.parse(raw);
+      state.settings   = mergeSettings(p.settings);
+      state.banners    = p.banners    || {};
+      state.characters = p.characters || {};
+      state.players    = p.players    || {};
+      state.rollLog    = p.rollLog    || {};
+      state.pullLog    = p.pullLog    || {};
     }
-  } catch (e) {
-    console.warn("โหลด localStorage ไม่สำเร็จ", e);
-  }
+  } catch (e) { console.warn("โหลด localStorage ล้มเหลว", e); }
   resolveAuth(localStorage.getItem("glPassword"));
   render();
 }
 
-function saveLocal() {
-  localStorage.setItem(LOCAL_KEY, JSON.stringify(state));
-}
+function saveLocal() { localStorage.setItem(LOCAL_KEY, JSON.stringify(state)); }
 
-function uid() {
-  return Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
-}
+function uid() { return Date.now().toString(36) + Math.random().toString(36).slice(2, 8); }
 
 // -------------------------------------------------------------------------
 // Firebase / init
@@ -133,23 +125,18 @@ function initStore() {
     try {
       firebase.initializeApp(window.FIREBASE_CONFIG);
       db = firebase.database();
-      firebase.auth().signInAnonymously().catch((err) => {
+      firebase.auth().signInAnonymously().catch(err => {
         console.error("Anonymous auth ล้มเหลว", err);
-        setConnStatus("error", "เชื่อม Firebase ไม่สำเร็จ (auth) — ใช้ local แทน");
-        mode = "local";
-        loadLocal();
+        setConnStatus("error", "เชื่อม Firebase ไม่สำเร็จ — ใช้ local แทน");
+        mode = "local"; loadLocal();
       });
-      firebase.auth().onAuthStateChanged((user) => {
+      firebase.auth().onAuthStateChanged(user => {
         if (user) {
           setConnStatus("online", "ออนไลน์ (Firebase) — แชร์ข้อมูลแบบสด");
           attachFirebaseListeners();
         }
       });
-    } catch (e) {
-      console.error(e);
-      mode = "local";
-      loadLocal();
-    }
+    } catch (e) { console.error(e); mode = "local"; loadLocal(); }
   } else {
     mode = "local";
     setConnStatus("local", "โหมดเครื่องนี้เครื่องเดียว (ยังไม่ตั้งค่า Firebase)");
@@ -158,46 +145,27 @@ function initStore() {
 }
 
 function attachFirebaseListeners() {
-  // อ่านรหัสผ่านจาก DB ก่อน (1 ครั้ง)
-  db.ref("sitePassword").once("value", snap => {
-    resolveAuth(snap.val());
-  });
+  db.ref("sitePassword").once("value", snap => resolveAuth(snap.val()));
 
-  db.ref("settings").on("value", (snap) => {
+  db.ref("settings").on("value", snap => {
     const val = snap.val();
     if (!val) { db.ref("settings").set(DEFAULT_SETTINGS); return; }
-    state.settings = Object.assign({}, DEFAULT_SETTINGS, val);
-    state.settings.baseScores = Object.assign({}, DEFAULT_SETTINGS.baseScores, val.baseScores || {});
-    state.settings.stages = val.stages || {};
+    state.settings = mergeSettings(val);
     render();
   });
-  db.ref("banners").on("value", (snap) => {
-    state.banners = snap.val() || {};
-    render();
-  });
-  db.ref("players").on("value", (snap) => {
-    state.players = snap.val() || {};
-    render();
-  });
-  db.ref("rollLog").on("value", (snap) => {
-    state.rollLog = snap.val() || {};
-    render();
-  });
-  db.ref("pullLog").on("value", (snap) => {
-    state.pullLog = snap.val() || {};
-    render();
-  });
+  db.ref("banners").on("value", snap => { state.banners = snap.val() || {}; render(); });
+  db.ref("characters").on("value", snap => { state.characters = snap.val() || {}; render(); });
+  db.ref("players").on("value", snap => { state.players = snap.val() || {}; render(); });
+  db.ref("rollLog").on("value", snap => { state.rollLog = snap.val() || {}; render(); });
+  db.ref("pullLog").on("value", snap => { state.pullLog = snap.val() || {}; render(); });
 }
 
 function setConnStatus(kind, text) {
   const el = document.getElementById("connStatus");
-  el.className = "conn-status conn-" +
-    (kind === "online" ? "online" : kind === "error" ? "bad" : "local");
+  el.className = "conn-status conn-" + (kind === "online" ? "online" : kind === "error" ? "bad" : "local");
   el.textContent = "โหมด: " + text;
   document.getElementById("footerMode").textContent =
-    mode === "firebase"
-      ? "เชื่อมต่อ Firebase อยู่"
-      : "เก็บข้อมูลใน localStorage เครื่องนี้เท่านั้น";
+    mode === "firebase" ? "เชื่อมต่อ Firebase อยู่" : "เก็บข้อมูลใน localStorage เครื่องนี้เท่านั้น";
 }
 
 function persistSettings() {
@@ -228,10 +196,18 @@ function removeBanner(id) {
   else { delete state.banners[id]; saveLocal(); render(); }
 }
 
-function addPullEntry(entry) {
-  entry.ts = Date.now();
-  if (mode === "firebase") db.ref("pullLog").push(entry);
-  else { state.pullLog[uid()] = entry; saveLocal(); render(); }
+function addCharacter(char) {
+  const id = uid();
+  if (mode === "firebase") db.ref("characters/" + id).set(char);
+  else { state.characters[id] = char; saveLocal(); render(); }
+}
+function updateCharacter(id, data) {
+  if (mode === "firebase") db.ref("characters/" + id).update(data);
+  else { state.characters[id] = { ...state.characters[id], ...data }; saveLocal(); render(); }
+}
+function removeCharacter(id) {
+  if (mode === "firebase") db.ref("characters/" + id).remove();
+  else { delete state.characters[id]; saveLocal(); render(); }
 }
 
 function addStage(stage) {
@@ -249,7 +225,6 @@ function removeStage(id) {
 // Scoring engine
 // -------------------------------------------------------------------------
 function stagePointsOf(stage, s) {
-  // ใหม่: difficulty 1-20 ตรงๆ | เก่า: weight × 20 (backward compat)
   const diffPts = stage.difficulty !== undefined
     ? Number(stage.difficulty)
     : Math.round((stage.weight || 0) * 20);
@@ -257,20 +232,24 @@ function stagePointsOf(stage, s) {
 }
 
 function pullScore(pull, s) {
-  const base  = s.baseScores[pull.category] || 0;
-  const meta  = pull.meta ? s.metaBonus : 0;
-  const dupW  = s.dupWeights[Math.min(pull.dupTier, 3)] ?? 0;
-  let score   = (base + meta) * dupW;
-
-  // ได้แต้มด่านเฉพาะเมื่อ stageApplies !== false (ค่า default = true สำหรับข้อมูลเก่า)
+  const base    = s.baseScores[pull.category] || 0;
+  const meta    = pull.meta    ? (s.metaBonus    || 0) : 0;
+  const breaker = pull.breaker ? (s.breakerBonus || 0) : 0;
+  const dupW    = s.dupWeights[Math.min(Number(pull.dupTier), 3)] ?? 0;
+  let score     = (base + meta + breaker) * dupW;
   if (pull.stageId && pull.stageApplies !== false && s.stages?.[pull.stageId]) {
     score += stagePointsOf(s.stages[pull.stageId], s);
   }
   return score;
 }
 
+// snapshot-aware: ใช้ค่าที่บันทึกไว้ถ้ามี
+function getPullScore(pull, s) {
+  return pull.scoreSnapshot !== undefined ? pull.scoreSnapshot : pullScore(pull, s);
+}
+
 // -------------------------------------------------------------------------
-// Dashboard computation — hoshi uses renormalized probability (rate/rate5star)
+// Dashboard computation
 // -------------------------------------------------------------------------
 function computePlayerStats(playerName) {
   const s = state.settings;
@@ -278,13 +257,13 @@ function computePlayerStats(playerName) {
   const playerPulls = Object.values(state.pullLog).filter(p => p.player === playerName);
 
   const totalRolls   = playerRolls.reduce((a, r) => a + Number(r.rolls || 0), 0);
-  const actualPoints = playerPulls.reduce((a, p) => a + pullScore(p, s), 0);
+  const actualPoints = playerPulls.reduce((a, p) => a + getPullScore(p, s), 0);
   const actualHits   = playerPulls.length;
 
   let expectedHits   = 0;
   let expectedPoints = 0;
   let variance       = 0;
-  const bannerMap    = {};  // for tooltip breakdown
+  const bannerMap    = {};
 
   for (const roll of playerRolls) {
     const banner    = roll.bannerId && state.banners[roll.bannerId];
@@ -296,14 +275,10 @@ function computePlayerStats(playerName) {
 
     if (!rates.length || !n) continue;
 
-    // init banner breakdown entry
     if (!bannerMap[bid]) {
       bannerMap[bid] = {
-        name: banner?.name || "(ไม่ระบุตู้)",
-        rate5star,
-        normalRolls: 0,
-        hoshiRolls:  0,
-        rateData: {},
+        name: banner?.name || "(ไม่ระบุตู้)", rate5star,
+        normalRolls: 0, hoshiRolls: 0, rateData: {},
       };
       for (const re of rates) {
         const label = CATEGORIES.find(c => c.key === re.category)?.label || re.category;
@@ -316,22 +291,18 @@ function computePlayerStats(playerName) {
     }
 
     const bd = bannerMap[bid];
-    if (isHoshi) bd.hoshiRolls += n;
-    else         bd.normalRolls += n;
+    if (isHoshi) bd.hoshiRolls += n; else bd.normalRolls += n;
 
     let pTotal = 0;
     for (const re of rates) {
-      // ปกติ: rate/100 | โฮชิ: rate/rate5star (renormalize เพราะ 5★ ออก 100%)
       const cr    = isHoshi
         ? (rate5star > 0 ? Number(re.rate) / rate5star : 0)
         : Number(re.rate) / 100;
       const base  = s.baseScores[re.category] || 0;
       const total = n * cr * base;
-
       expectedHits   += n * cr;
       expectedPoints += total;
       pTotal         += cr;
-
       if (bd.rateData[re.category]) {
         if (isHoshi) bd.rateData[re.category].hoshiTotal  += total;
         else         bd.rateData[re.category].normalTotal += total;
@@ -348,28 +319,21 @@ function computePlayerStats(playerName) {
   const sd = Math.sqrt(variance);
   const z  = variance > 0 ? (actualHits - expectedHits) / sd : 0;
 
-  return {
-    player: playerName,
-    totalRolls, actualHits, expectedHits,
-    actualPoints, expectedPoints,
-    deviation: actualPoints - expectedPoints,
-    z, breakdown,
-  };
+  return { player: playerName, totalRolls, actualHits, expectedHits,
+           actualPoints, expectedPoints, deviation: actualPoints - expectedPoints, z, breakdown };
 }
 
 // -------------------------------------------------------------------------
 // Rendering helpers
 // -------------------------------------------------------------------------
 function fmt(n, d = 2) {
-  return Number(n).toLocaleString("en-US", {
-    minimumFractionDigits: d, maximumFractionDigits: d,
-  });
+  return Number(n).toLocaleString("en-US", { minimumFractionDigits: d, maximumFractionDigits: d });
 }
 function fmtDate(ts) {
   return new Date(ts).toLocaleString("th-TH", { dateStyle: "short", timeStyle: "short" });
 }
-function playerNames()  { return Object.values(state.players).map(p => p.name); }
-function bannerEntries(){ return Object.entries(state.banners); }
+function playerNames()   { return Object.values(state.players).map(p => p.name); }
+function bannerEntries() { return Object.entries(state.banners); }
 
 function render() {
   renderPlayerSelects();
@@ -378,6 +342,7 @@ function render() {
   renderBannerChips();
   renderSettingsForm();
   renderStageTable();
+  renderCharacterList();
   renderRollLogTable();
   renderPullLogTable();
   renderDashboard();
@@ -399,12 +364,11 @@ function renderBannerSelects() {
   if (!sel) return;
   const prev = sel.value;
   sel.innerHTML = entries.length
-      ? entries.map(([bid, b]) =>
-          `<option value="${bid}">${esc(b.name)} (${esc(bannerRatesSummary(b))})</option>`
-        ).join("")
+    ? entries.map(([bid, b]) =>
+        `<option value="${bid}">${esc(b.name)} (${esc(bannerRatesSummary(b))})</option>`
+      ).join("")
     : `<option value="">— เพิ่มตู้ในแท็บตั้งค่าก่อน —</option>`;
-  const ids = entries.map(([bid]) => bid);
-  if (ids.includes(prev)) sel.value = prev;
+  if (entries.map(([bid]) => bid).includes(prev)) sel.value = prev;
 }
 
 function renderPlayerChips() {
@@ -435,7 +399,8 @@ function renderBannerChips() {
 
 function renderSettingsForm() {
   const s = state.settings;
-  document.getElementById("setMetaBonus").value   = s.metaBonus;
+  document.getElementById("setMetaBonus").value    = s.metaBonus;
+  document.getElementById("setBreakerBonus").value = s.breakerBonus ?? 10;
   document.getElementById("setMonthlyPoint").value = s.monthlyPoint;
 
   document.getElementById("baseScoreRows").innerHTML = CATEGORIES.map(c =>
@@ -467,6 +432,27 @@ function renderStageTable() {
       }).join("")
     : `<tr><td colspan="5" class="empty-hint">ยังไม่มีด่าน</td></tr>`;
 }
+
+function renderCharacterList() {
+  const tbody = document.getElementById("charBody");
+  if (!tbody) return;
+  const entries = Object.entries(state.characters).sort((a, b) => a[1].name.localeCompare(b[1].name, "th"));
+  tbody.innerHTML = entries.length
+    ? entries.map(([id, c]) => {
+        const catLabel = CATEGORIES.find(x => x.key === c.category)?.label || c.category;
+        return `<tr>
+          <td class="name charname-cell">${esc(c.name)}</td>
+          <td>${esc(catLabel)}</td>
+          <td>${c.breaker ? '<span class="hoshi-badge" style="background:#7c4dff">Breaker</span>' : "—"}</td>
+          <td>
+            <button class="btn-sm btn-secondary" data-edit-char="${id}">แก้ไข</button>
+            <button class="icon-btn" data-remove-char="${id}" title="ลบ">×</button>
+          </td>
+        </tr>`;
+      }).join("")
+    : `<tr><td colspan="4" class="empty-hint">ยังไม่มีตัวละคร — เพิ่มด้านบน</td></tr>`;
+}
+
 function renderRollLogTable() {
   const tbody = document.getElementById("rollLogBody");
   const rows  = Object.values(state.rollLog).sort((a, b) => b.ts - a.ts).slice(0, 100);
@@ -486,31 +472,37 @@ function renderRollLogTable() {
 }
 
 function buildScoreTip(p, s) {
-  const base  = s.baseScores[p.category] || 0;
-  const meta  = p.meta ? (s.metaBonus || 0) : 0;
-  const dupW  = s.dupWeights[Math.min(Number(p.dupTier), 3)] ?? 0;
-  const charPts = (base + meta) * dupW;
+  const base    = s.baseScores[p.category] || 0;
+  const meta    = p.meta    ? (s.metaBonus    || 0) : 0;
+  const breaker = p.breaker ? (s.breakerBonus || 0) : 0;
+  const dupW    = s.dupWeights[Math.min(Number(p.dupTier), 3)] ?? 0;
+  const charPts = (base + meta + breaker) * dupW;
 
-  const baseStr = meta > 0 ? `(${base} + Meta ${meta})` : `${base}`;
-  let lines = [
-    `${baseStr} × dup ${dupW}  =  ${fmt(charPts, 1)} pts`,
-  ];
+  const bonuses = [];
+  if (meta > 0)    bonuses.push(`Meta ${meta}`);
+  if (breaker > 0) bonuses.push(`Breaker ${breaker}`);
+  const baseStr = bonuses.length ? `${base} + ${bonuses.join(" + ")}` : `${base}`;
+
+  let lines = [`(${baseStr}) × dup ${dupW}  =  ${fmt(charPts, 1)} pts`];
 
   let stagePts = 0;
   if (p.stageId && p.stageApplies !== false && s.stages?.[p.stageId]) {
-    const st = s.stages[p.stageId];
-    const diff = st.difficulty !== undefined ? Number(st.difficulty) : Math.round((st.weight || 0) * 20);
+    const st      = s.stages[p.stageId];
+    const diff    = st.difficulty !== undefined ? Number(st.difficulty) : Math.round((st.weight || 0) * 20);
     const monthly = st.monthly ? (s.monthlyPoint || 0) : 0;
-    stagePts = diff + monthly;
-    const monthlyStr = monthly > 0 ? ` + monthly ${monthly}` : "";
-    lines.push(`+ ด่าน "${st.name}"  ยาก ${diff}${monthlyStr}  =  +${stagePts} pts`);
+    stagePts      = diff + monthly;
+    lines.push(`+ ด่าน "${st.name}"  ยาก ${diff}${monthly > 0 ? ` + monthly ${monthly}` : ""}  =  +${stagePts} pts`);
   } else if (p.stageId && p.stageApplies === false) {
     lines.push(`ด่าน: ซ้ำ — ไม่ได้แต้มด่าน`);
   }
 
   const total = charPts + stagePts;
   lines.push(`─────────────────────`);
-  lines.push(`รวม  ${fmt(total, 1)} pts`);
+  if (p.scoreSnapshot !== undefined) {
+    lines.push(`รวม (snapshot)  ${fmt(p.scoreSnapshot, 1)} pts`);
+  } else {
+    lines.push(`รวม  ${fmt(total, 1)} pts`);
+  }
   return lines.join("\n");
 }
 
@@ -526,7 +518,7 @@ function renderPullLogTable() {
         const stageName = stage ? esc(stage.name) : `<span class="hint small">—</span>`;
         const stageGot  = p.stageId ? (p.stageApplies !== false ? "✔" : "✘") : "—";
         const dupLabel  = `${p.dupTier}${Number(p.dupTier) >= 3 ? "+" : ""}`;
-        const score     = pullScore(p, s);
+        const score     = getPullScore(p, s);
         const tipText   = esc(buildScoreTip(p, s));
         return `<tr>
           <td>${fmtDate(p.ts)}</td>
@@ -534,7 +526,8 @@ function renderPullLogTable() {
           <td class="name charname-cell">${p.charName ? esc(p.charName) : '<span class="hint small">—</span>'}</td>
           <td>${esc(cat)}</td>
           <td>${dupLabel}</td>
-          <td>${p.meta ? "✔" : "—"}</td>
+          <td>${p.meta    ? "✔" : "—"}</td>
+          <td>${p.breaker ? '<span class="hoshi-badge" style="background:#7c4dff;font-size:10px">B</span>' : "—"}</td>
           <td class="name">${stageName}</td>
           <td>${stageGot}</td>
           <td class="score-cell tip-wrap">
@@ -543,9 +536,8 @@ function renderPullLogTable() {
           </td>
         </tr>`;
       }).join("")
-    : `<tr><td colspan="9" class="empty-hint">ยังไม่มีตัวละครที่บันทึก</td></tr>`;
+    : `<tr><td colspan="10" class="empty-hint">ยังไม่มีตัวละครที่บันทึก</td></tr>`;
 }
-
 
 function buildExpectedTip(breakdown, expectedPoints) {
   if (!breakdown.length) return esc("ยังไม่มีข้อมูลตู้");
@@ -554,7 +546,6 @@ function buildExpectedTip(breakdown, expectedPoints) {
     const totalRolls = bd.normalRolls + bd.hoshiRolls;
     const hoshiNote  = bd.hoshiRolls > 0 ? `  (โฮชิ ${bd.hoshiRolls} roll)` : "";
     parts.push(`[${bd.name}  ×  ${totalRolls} โรล${hoshiNote}]`);
-
     for (const re of Object.values(bd.rateData)) {
       if (bd.normalRolls > 0) {
         const prob    = re.rate / 100;
@@ -581,14 +572,9 @@ function renderDashboard() {
   const names     = playerNames();
   const tbody     = document.getElementById("dashboardBody");
   const emptyHint = document.getElementById("dashboardEmpty");
+  const stats     = names.map(computePlayerStats).filter(st => st.totalRolls > 0);
 
-  const stats = names.map(computePlayerStats).filter(st => st.totalRolls > 0);
-
-  if (!stats.length) {
-    tbody.innerHTML = "";
-    emptyHint.hidden = false;
-    return;
-  }
+  if (!stats.length) { tbody.innerHTML = ""; emptyHint.hidden = false; return; }
   emptyHint.hidden = true;
 
   const sortedByZ = [...stats].sort((a, b) => a.z - b.z);
@@ -620,20 +606,30 @@ function esc(str) {
 }
 
 // -------------------------------------------------------------------------
-// Session pull rows (ตัวละครที่ได้ในเซสชันนี้ก่อนกดบันทึก)
+// Session pull rows
 // -------------------------------------------------------------------------
 function buildSessionPullRow() {
+  const chars     = Object.entries(state.characters)
+    .sort((a, b) => a[1].name.localeCompare(b[1].name, "th"));
   const stages    = state.settings.stages || {};
   const stageOpts = Object.entries(stages)
     .map(([id, st]) => `<option value="${id}">${esc(st.name)}</option>`)
     .join("");
 
+  const charOpts = chars.length
+    ? chars.map(([id, c]) => {
+        const catLabel = CATEGORIES.find(x => x.key === c.category)?.label || c.category;
+        const bTag     = c.breaker ? " 🔨" : "";
+        return `<option value="${id}">${esc(c.name)} (${esc(catLabel)})${bTag}</option>`;
+      }).join("")
+    : "";
+
   const row = document.createElement("div");
   row.className = "sp-row";
   row.innerHTML = `
-    <input type="text" class="sp-charname" placeholder="ชื่อตัวละคร">
-    <select class="sp-cat">
-      ${CATEGORIES.map(c => `<option value="${c.key}">${c.label}</option>`).join("")}
+    <select class="sp-char">
+      <option value="">— เลือกตัวละคร —</option>
+      ${charOpts || '<option value="" disabled>ยังไม่มีตัวละคร เพิ่มในแท็บตั้งค่าก่อน</option>'}
     </select>
     <select class="sp-dup">
       <option value="0">ดุ๊ป 0 (ใหม่)</option>
@@ -651,7 +647,7 @@ function buildSessionPullRow() {
     </label>
     <button type="button" class="sp-del icon-btn" title="ลบแถวนี้">×</button>
   `;
-  const stageSelect  = row.querySelector(".sp-stage");
+  const stageSelect   = row.querySelector(".sp-stage");
   const stageBonusLbl = row.querySelector(".sp-stage-bonus");
   stageSelect.addEventListener("change", () => {
     stageBonusLbl.style.display = stageSelect.value ? "" : "none";
@@ -661,7 +657,7 @@ function buildSessionPullRow() {
 }
 
 // -------------------------------------------------------------------------
-// Banner rate row builder (for settings form)
+// Banner rate row builder
 // -------------------------------------------------------------------------
 function addBannerRateRow(defaultCat = "", defaultRate = "") {
   const container = document.getElementById("bannerRateRows");
@@ -684,9 +680,11 @@ function addBannerRateRow(defaultCat = "", defaultRate = "") {
 // -------------------------------------------------------------------------
 // Event wiring
 // -------------------------------------------------------------------------
+let editingCharId = null;
+
 document.addEventListener("DOMContentLoaded", () => {
 
-  // ── Auth form ─────────────────────────────────────────────────────────
+  // ── Auth ──────────────────────────────────────────────────────────────
   document.getElementById("authForm").addEventListener("submit", e => {
     e.preventDefault();
     const errEl = document.getElementById("authError");
@@ -717,23 +715,19 @@ document.addEventListener("DOMContentLoaded", () => {
     });
   });
 
-  // ── Session pull: เพิ่มแถว ────────────────────────────────────────────
+  // ── Session pull: เพิ่มแถว ─────────────────────────────────────────────
   document.getElementById("addSessionPullBtn").addEventListener("click", () => {
     document.getElementById("sessionPullList").appendChild(buildSessionPullRow());
   });
 
-  // ── โฮชิ checkbox: ล็อคโรลให้เป็น 1 เสมอ ─────────────────────────────
+  // ── โฮชิ checkbox ─────────────────────────────────────────────────────
   document.getElementById("rollHoshi").addEventListener("change", e => {
     const countInput = document.getElementById("rollCount");
-    if (e.target.checked) {
-      countInput.value    = 1;
-      countInput.disabled = true;
-    } else {
-      countInput.disabled = false;
-    }
+    if (e.target.checked) { countInput.value = 1; countInput.disabled = true; }
+    else { countInput.disabled = false; }
   });
 
-  // ── Roll form (บันทึกโรล + session pulls พร้อมกัน) ───────────────────
+  // ── Roll form ─────────────────────────────────────────────────────────
   document.getElementById("rollForm").addEventListener("submit", e => {
     e.preventDefault();
     const player   = document.getElementById("rollPlayerSelect").value;
@@ -742,37 +736,43 @@ document.addEventListener("DOMContentLoaded", () => {
     const rolls    = hoshi ? 1 : Number(document.getElementById("rollCount").value);
     if (!player || !bannerId || !rolls || rolls <= 0) return;
 
-    // รวบรวม session pulls — กรอง Normal ที่ไม่มีด่านออก
-    const spRows    = [...document.getElementById("sessionPullList").querySelectorAll(".sp-row")];
+    const s       = state.settings;
+    const spRows  = [...document.getElementById("sessionPullList").querySelectorAll(".sp-row")];
     const pullItems = spRows
       .map((row, i) => {
-        const stageId = row.querySelector(".sp-stage").value || null;
-        const stageApplies = stageId
-          ? row.querySelector(".sp-stage-applies").checked
-          : true;
-        return {
-          player,
-          bannerId,
-          charName: row.querySelector(".sp-charname").value.trim(),
-          category: row.querySelector(".sp-cat").value,
-          dupTier:  Number(row.querySelector(".sp-dup").value),
-          meta:     row.querySelector(".sp-meta").checked,
-          stageId,
-          stageApplies,
-          ts:       Date.now() + i + 1,
+        const charId = row.querySelector(".sp-char").value;
+        if (!charId) return null;
+        const char = state.characters[charId];
+        if (!char) return null;
+
+        const stageId      = row.querySelector(".sp-stage").value || null;
+        const stageApplies = stageId ? row.querySelector(".sp-stage-applies").checked : true;
+        const meta         = row.querySelector(".sp-meta").checked;
+        const dupTier      = Number(row.querySelector(".sp-dup").value);
+
+        const entry = {
+          player, bannerId,
+          charId,
+          charName:  char.name,
+          category:  char.category,
+          breaker:   !!char.breaker,
+          dupTier, meta, stageId, stageApplies,
+          ts: Date.now() + i + 1,
         };
+        entry.scoreSnapshot = pullScore(entry, s);
+        return entry;
       })
-      .filter(item => item.category === "collab" || item.stageId);
+      .filter(item => item !== null);
 
     // ── ยืนยันก่อนบันทึก ────────────────────────────────────────────────
     const bannerObj   = state.banners[bannerId];
     const bannerLabel = bannerObj ? `${bannerObj.name} (${bannerRatesSummary(bannerObj)})` : "ไม่ระบุ";
-    const hoshiLabel  = hoshi ? "  🌟 โฮชิ\n" : "";
+    const hoshiLine   = hoshi ? "  🌟 โฮชิ" : null;
     const pullSummary = pullItems.length
       ? pullItems.map(p => {
-          const cat = CATEGORIES.find(c => c.key === p.category)?.label || p.category;
-          const nameStr = p.charName ? `${p.charName} — ` : "";
-          return `  • ${nameStr}${cat} ดุ๊ป${p.dupTier}${p.meta ? " [Meta]" : ""}${p.stageId ? " [มีด่าน]" : ""}`;
+          const cat   = CATEGORIES.find(c => c.key === p.category)?.label || p.category;
+          const flags = [p.meta?"Meta":null, p.breaker?"Breaker":null, p.stageId?"มีด่าน":null].filter(Boolean).join(", ");
+          return `  • ${p.charName} — ${cat} ดุ๊ป${p.dupTier}${flags?` [${flags}]`:""}  (${fmt(p.scoreSnapshot,1)} pts)`;
         }).join("\n")
       : "  (ไม่มีตัวที่ได้)";
 
@@ -782,25 +782,21 @@ document.addEventListener("DOMContentLoaded", () => {
       `ผู้เล่น : ${player}`,
       `ตู้      : ${bannerLabel}`,
       `โรล     : ${rolls}`,
-      hoshiLabel.trim() ? hoshiLabel.trim() : null,
-      "",
-      "ตัวที่ได้:",
-      pullSummary,
-      "",
+      hoshiLine, "",
+      "ตัวที่ได้:", pullSummary, "",
       "⚠️  บันทึกแล้วแก้ไขย้อนหลังไม่ได้",
     ].filter(l => l !== null).join("\n");
 
     if (!confirm(msg)) return;
 
-    // ── บันทึก ────────────────────────────────────────────────────────────
+    // ── บันทึก ───────────────────────────────────────────────────────────
     if (mode === "firebase") {
       db.ref("rollLog").push({ player, bannerId, rolls, hoshi, ts: Date.now() });
       pullItems.forEach(p => db.ref("pullLog").push(p));
     } else {
       state.rollLog[uid()] = { player, bannerId, rolls, hoshi, ts: Date.now() };
       pullItems.forEach(p => { state.pullLog[uid()] = p; });
-      saveLocal();
-      render();
+      saveLocal(); render();
     }
 
     document.getElementById("sessionPullList").innerHTML = "";
@@ -808,7 +804,6 @@ document.addEventListener("DOMContentLoaded", () => {
     document.getElementById("rollCount").disabled        = false;
     document.getElementById("rollHoshi").checked         = false;
   });
-
 
   // ── Player form ────────────────────────────────────────────────────────
   document.getElementById("playerForm").addEventListener("submit", e => {
@@ -820,55 +815,78 @@ document.addEventListener("DOMContentLoaded", () => {
     addPlayer(name);
     input.value = "";
   });
-
   document.getElementById("playerList").addEventListener("click", e => {
     const id = e.target.dataset.removePlayer;
     if (id && confirm("ลบผู้เล่นนี้? (ประวัติ log เดิมจะยังอยู่แต่จะไม่โผล่ในดรอปดาวน์)"))
       removePlayer(id);
   });
 
-  // ── Banner rate add button ─────────────────────────────────────────────
-  document.getElementById("addBannerRateBtn").addEventListener("click", () => {
-    addBannerRateRow();
-  });
-
-  // ── Banner form submit ─────────────────────────────────────────────────
+  // ── Banner rate add / form ──────────────────────────────────────────────
+  document.getElementById("addBannerRateBtn").addEventListener("click", () => addBannerRateRow());
   document.getElementById("bannerForm").addEventListener("submit", e => {
     e.preventDefault();
-    const name = document.getElementById("bannerName").value.trim();
+    const name     = document.getElementById("bannerName").value.trim();
     if (!name) return;
-
     const rateRows = [...document.querySelectorAll("#bannerRateRows .banner-rate-row")];
     const rates    = rateRows
-      .map(row => ({
-        category: row.querySelector(".br-cat").value,
-        rate:     Number(row.querySelector(".br-rate").value || 0),
-      }))
+      .map(row => ({ category: row.querySelector(".br-cat").value, rate: Number(row.querySelector(".br-rate").value || 0) }))
       .filter(r => r.rate > 0);
-
-    if (!rates.length) {
-      alert("กรุณาใส่อัตรา (%) อย่างน้อย 1 ประเภท");
-      return;
-    }
-
-    const rate5star  = Number(document.getElementById("bannerRate5star").value || 12);
-    const totalRate  = rates.reduce((sum, r) => sum + r.rate, 0);
-    if (totalRate > rate5star) {
-      alert(`อัตรารวม (${fmt(totalRate, 2)}%) เกินอัตรา 5★+ (${rate5star}%) — กรุณาตรวจสอบ`);
-      return;
-    }
-
+    if (!rates.length) { alert("กรุณาใส่อัตรา (%) อย่างน้อย 1 ประเภท"); return; }
+    const rate5star = Number(document.getElementById("bannerRate5star").value || 12);
+    const totalRate = rates.reduce((sum, r) => sum + r.rate, 0);
+    if (totalRate > rate5star) { alert(`อัตรารวม (${fmt(totalRate,2)}%) เกินอัตรา 5★+ (${rate5star}%)`); return; }
     addBanner({ name, rate5star, rates });
     document.getElementById("bannerName").value         = "";
     document.getElementById("bannerRate5star").value    = "12";
     document.getElementById("bannerRateRows").innerHTML = "";
-    addBannerRateRow(); // reset with one empty row
+    addBannerRateRow();
   });
-
   document.getElementById("bannerList").addEventListener("click", e => {
     const id = e.target.dataset.removeBanner;
     if (id && confirm("ลบตู้นี้? (roll/pull log ที่อ้างถึงตู้นี้จะยังอยู่แต่จะไม่มีชื่อตู้)"))
       removeBanner(id);
+  });
+
+  // ── Character form ────────────────────────────────────────────────────
+  document.getElementById("charForm").addEventListener("submit", e => {
+    e.preventDefault();
+    const name     = document.getElementById("newCharName").value.trim();
+    const category = document.getElementById("newCharCategory").value;
+    const breaker  = document.getElementById("newCharBreaker").checked;
+    if (!name) return;
+    if (editingCharId) {
+      updateCharacter(editingCharId, { name, category, breaker });
+      editingCharId = null;
+      document.getElementById("charSubmitBtn").textContent = "+ เพิ่มตัวละคร";
+      document.getElementById("charCancelBtn").hidden = true;
+    } else {
+      addCharacter({ name, category, breaker });
+    }
+    e.target.reset();
+  });
+  document.getElementById("charCancelBtn").addEventListener("click", () => {
+    editingCharId = null;
+    document.getElementById("charForm").reset();
+    document.getElementById("charSubmitBtn").textContent = "+ เพิ่มตัวละคร";
+    document.getElementById("charCancelBtn").hidden = true;
+  });
+  document.getElementById("charBody").addEventListener("click", e => {
+    const editId   = e.target.dataset.editChar;
+    const removeId = e.target.dataset.removeChar;
+    if (editId) {
+      const c = state.characters[editId];
+      if (!c) return;
+      document.getElementById("newCharName").value        = c.name;
+      document.getElementById("newCharCategory").value   = c.category;
+      document.getElementById("newCharBreaker").checked  = !!c.breaker;
+      document.getElementById("charSubmitBtn").textContent = "บันทึก";
+      document.getElementById("charCancelBtn").hidden = false;
+      editingCharId = editId;
+      document.getElementById("newCharName").focus();
+    }
+    if (removeId && confirm("ลบตัวละครนี้? (pull log ที่บันทึกไปแล้วจะยังอยู่ แต่ snapshot คะแนนไม่เปลี่ยน)")) {
+      removeCharacter(removeId);
+    }
   });
 
   // ── Stage form ────────────────────────────────────────────────────────
@@ -881,20 +899,20 @@ document.addEventListener("DOMContentLoaded", () => {
     addStage({ name, difficulty, monthly });
     e.target.reset();
   });
-
   document.getElementById("stageBody").addEventListener("click", e => {
     const id = e.target.dataset.removeStage;
     if (id && confirm("ลบด่านนี้?")) removeStage(id);
   });
 
   // ── Settings live-edit ────────────────────────────────────────────────
-  const bindSetting = (id, setter, isNumber = true) => {
+  const bindSetting = (id, setter) => {
     document.getElementById(id).addEventListener("change", e => {
-      setter(isNumber ? Number(e.target.value) : e.target.value);
+      setter(Number(e.target.value));
       persistSettings();
     });
   };
-  bindSetting("setMetaBonus",    v => (state.settings.metaBonus   = v));
+  bindSetting("setMetaBonus",    v => (state.settings.metaBonus    = v));
+  bindSetting("setBreakerBonus", v => (state.settings.breakerBonus = v));
   bindSetting("setMonthlyPoint", v => (state.settings.monthlyPoint = v));
 
   document.getElementById("baseScoreRows").addEventListener("change", e => {
@@ -913,7 +931,7 @@ document.addEventListener("DOMContentLoaded", () => {
   // ── Initial empty banner rate row ─────────────────────────────────────
   addBannerRateRow();
 
-  // ── Global floating tooltip (position:fixed — ไม่โดน overflow บัง) ────
+  // ── Global floating tooltip ───────────────────────────────────────────
   (function () {
     const tipEl = document.createElement("div");
     tipEl.className = "global-tip";
@@ -927,16 +945,14 @@ document.addEventListener("DOMContentLoaded", () => {
       if (!src) return;
       tipEl.innerHTML = src.innerHTML;
       tipEl.style.display = "block";
-
       const r  = wrap.getBoundingClientRect();
       const tw = tipEl.offsetWidth;
       const th = tipEl.offsetHeight;
-      // แสดงเหนือ cell; ถ้าชิดขอบบนให้แสดงใต้แทน
       let top  = r.top - th - 10;
       let left = r.left;
-      if (top < 8)                              top  = r.bottom + 10;
-      if (left + tw > window.innerWidth - 8)   left = window.innerWidth - tw - 8;
-      if (left < 8)                             left = 8;
+      if (top < 8)                            top  = r.bottom + 10;
+      if (left + tw > window.innerWidth - 8) left = window.innerWidth - tw - 8;
+      if (left < 8)                           left = 8;
       tipEl.style.top  = top  + "px";
       tipEl.style.left = left + "px";
     }, true);

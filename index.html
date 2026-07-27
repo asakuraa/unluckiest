@@ -114,7 +114,7 @@
       <table>
         <thead><tr>
           <th>เวลา</th><th>ผู้เล่น</th><th>ชื่อตัว</th>
-          <th>ประเภท</th><th>ดุ๊ป</th><th>Meta</th><th>ด่าน</th><th>ได้แต้มด่าน</th><th>คะแนน</th>
+          <th>ประเภท</th><th>ดุ๊ป</th><th>Meta</th><th>Breaker</th><th>ด่าน</th><th>ได้แต้มด่าน</th><th>คะแนน</th>
         </tr></thead>
         <tbody id="pullLogBody"></tbody>
       </table>
@@ -161,6 +161,30 @@
         <ul id="bannerList" class="chip-list banner-chip-list"></ul>
       </div>
 
+      <div class="card card-wide">
+        <h3>ตัวละคร (Character Database)</h3>
+        <p class="hint small">เพิ่มตัวละครก่อนบันทึกโรล · แก้ไขได้ · คะแนนที่บันทึกไปแล้วจะไม่เปลี่ยนแม้แก้ข้อมูลตัวละคร (snapshot)</p>
+        <form id="charForm" class="stage-form">
+          <input type="text" id="newCharName" placeholder="ชื่อตัวละคร" required>
+          <select id="newCharCategory">
+            <option value="limitEndMid">Limit end / mid</option>
+            <option value="limitElement">Limit element</option>
+            <option value="collab">Collab</option>
+            <option value="alpha">Alpha</option>
+            <option value="otherLimit">Other limit</option>
+          </select>
+          <label class="checkbox-line"><input type="checkbox" id="newCharBreaker"> Breaker</label>
+          <button type="submit" id="charSubmitBtn" class="btn-secondary">+ เพิ่มตัวละคร</button>
+          <button type="button" id="charCancelBtn" class="btn-secondary" hidden>ยกเลิก</button>
+        </form>
+        <div class="table-scroll">
+          <table>
+            <thead><tr><th>ชื่อ</th><th>ประเภท</th><th>Breaker</th><th></th></tr></thead>
+            <tbody id="charBody"></tbody>
+          </table>
+        </div>
+      </div>
+
       <div class="card">
         <h3>คะแนน Base ตามประเภท</h3>
         <div id="baseScoreRows" class="kv-rows"></div>
@@ -176,6 +200,9 @@
         <h3>โบนัสอื่น ๆ</h3>
         <label class="row">Meta bonus
           <input type="number" id="setMetaBonus" min="0">
+        </label>
+        <label class="row">Breaker bonus
+          <input type="number" id="setBreakerBonus" min="0">
         </label>
         <label class="row">Monthly point
           <input type="number" id="setMonthlyPoint" min="0">
