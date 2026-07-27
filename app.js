@@ -359,6 +359,7 @@ function render() {
   renderPlayerChips();
   renderBannerChips();
   renderSettingsForm();
+  renderCharRoleSelect();
   renderStageTable();
   renderCharacterList();
   renderRollLogTable();
@@ -430,6 +431,18 @@ function renderSettingsForm() {
     `<div class="kv-row"><span>ดุ๊ปที่ ${i}${i===3?"+":""}</span>
      <input type="number" step="0.05" data-dup="${i}" value="${s.dupWeights[i]}"></div>`
   ).join("");
+}
+
+function renderCharRoleSelect() {
+  const select = document.getElementById("newCharRole");
+  if (!select) return;
+  const metaBonus = state.settings.metaBonus ?? 20;
+  const breakerBonus = state.settings.breakerBonus ?? 10;
+  select.innerHTML = `
+    <option value="">Normal</option>
+    <option value="meta">Meta (+${metaBonus})</option>
+    <option value="breaker">Breaker (+${breakerBonus})</option>
+  `;
 }
 
 function renderStageTable() {
