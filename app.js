@@ -221,6 +221,12 @@ function removeStage(id) {
   persistSettings();
 }
 
+// backward compat: char เก่ามี breaker:bool → แปลงเป็น role string
+function getCharRole(c) {
+  if (c.role !== undefined) return c.role;
+  return c.breaker ? "breaker" : "";
+}
+
 // -------------------------------------------------------------------------
 // Scoring engine
 // -------------------------------------------------------------------------
@@ -440,10 +446,16 @@ function renderCharacterList() {
   tbody.innerHTML = entries.length
     ? entries.map(([id, c]) => {
         const catLabel = CATEGORIES.find(x => x.key === c.category)?.label || c.category;
+        const role     = getCharRole(c);
+        const roleBadge = role === "meta"
+          ? '<span class="hoshi-badge" style="background:#c4920a">Meta</span>'
+          : role === "breaker"
+          ? '<span class="hoshi-badge" style="background:#7c4dff">Breaker</span>'
+          : "—";
         return `<tr>
           <td class="name charname-cell">${esc(c.name)}</td>
           <td>${esc(catLabel)}</td>
-          <td>${c.breaker ? '<span class="hoshi-badge" style="background:#7c4dff">Breaker</span>' : "—"}</td>
+          <td>${roleBadge}</td>
           <td>
             <button class="btn-sm btn-secondary" data-edit-char="${id}">แก้ไข</button>
             <button class="icon-btn" data-remove-char="${id}" title="ลบ">×</button>
@@ -619,8 +631,9 @@ function buildSessionPullRow() {
   const charOpts = chars.length
     ? chars.map(([id, c]) => {
         const catLabel = CATEGORIES.find(x => x.key === c.category)?.label || c.category;
-        const bTag     = c.breaker ? " 🔨" : "";
-        return `<option value="${id}">${esc(c.name)} (${esc(catLabel)})${bTag}</option>`;
+        const role = getCharRole(c);
+        const roleTag = role === "meta" ? " ⭐" : role === "breaker" ? " 🔨" : "";
+        return `<option value="${id}">${esc(c.name)} (${esc(catLabel)})${roleTag}</option>`;
       }).join("")
     : "";
 
@@ -637,7 +650,6 @@ function buildSessionPullRow() {
       <option value="2">ดุ๊ป 2</option>
       <option value="3">ดุ๊ป 3+</option>
     </select>
-    <label class="sp-meta-label"><input type="checkbox" class="sp-meta"> Meta</label>
     <select class="sp-stage">
       <option value="">— ไม่มีด่าน —</option>
       ${stageOpts}
@@ -747,16 +759,17 @@ document.addEventListener("DOMContentLoaded", () => {
 
         const stageId      = row.querySelector(".sp-stage").value || null;
         const stageApplies = stageId ? row.querySelector(".sp-stage-applies").checked : true;
-        const meta         = row.querySelector(".sp-meta").checked;
         const dupTier      = Number(row.querySelector(".sp-dup").value);
+        const role         = getCharRole(char);
 
         const entry = {
           player, bannerId,
           charId,
           charName:  char.name,
           category:  char.category,
-          breaker:   !!char.breaker,
-          dupTier, meta, stageId, stageApplies,
+          meta:      role === "meta",
+          breaker:   role === "breaker",
+          dupTier, stageId, stageApplies,
           ts: Date.now() + i + 1,
         };
         entry.scoreSnapshot = pullScore(entry, s);
@@ -852,15 +865,15 @@ document.addEventListener("DOMContentLoaded", () => {
     e.preventDefault();
     const name     = document.getElementById("newCharName").value.trim();
     const category = document.getElementById("newCharCategory").value;
-    const breaker  = document.getElementById("newCharBreaker").checked;
+    const role     = document.getElementById("newCharRole").value;
     if (!name) return;
     if (editingCharId) {
-      updateCharacter(editingCharId, { name, category, breaker });
+      updateCharacter(editingCharId, { name, category, role });
       editingCharId = null;
       document.getElementById("charSubmitBtn").textContent = "+ เพิ่มตัวละคร";
       document.getElementById("charCancelBtn").hidden = true;
     } else {
-      addCharacter({ name, category, breaker });
+      addCharacter({ name, category, role });
     }
     e.target.reset();
   });
@@ -878,7 +891,7 @@ document.addEventListener("DOMContentLoaded", () => {
       if (!c) return;
       document.getElementById("newCharName").value        = c.name;
       document.getElementById("newCharCategory").value   = c.category;
-      document.getElementById("newCharBreaker").checked  = !!c.breaker;
+      document.getElementById("newCharRole").value       = getCharRole(c);
       document.getElementById("charSubmitBtn").textContent = "บันทึก";
       document.getElementById("charCancelBtn").hidden = false;
       editingCharId = editId;
