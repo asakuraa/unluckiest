@@ -255,8 +255,11 @@ td.charname-cell{ font-family:var(--body); font-weight:600; color:var(--gold); }
 .auth-logo{ display:flex; align-items:center; justify-content:center; gap:10px; margin-bottom:4px; }
 .auth-logo h2{ font-size:18px; }
 .auth-form{ display:flex; flex-direction:column; gap:12px; margin-top:18px; }
+.auth-form[hidden]{ display:none !important; }
 .auth-form input{ text-align:center; letter-spacing:3px; font-size:15px; }
 .auth-error{ color:var(--rose); font-size:13px; margin-top:6px; margin-bottom:0; }
+#showCreateUserBtn{ display:none !important; }
+.list-pager{ display:flex; align-items:center; justify-content:center; gap:10px; margin-top:12px; min-height:28px; }
 
 /* ---------- score tooltip ---------- */
 .score-cell{ text-align:right; }

@@ -47,6 +47,7 @@ let state = {
   players:    {},
   rollLog:    {},
   pullLog:    {},
+  auditLog:   {},
 };
 
 let mode = "local";
@@ -56,11 +57,89 @@ let db   = null;
 // Auth
 // -------------------------------------------------------------------------
 let sitePassword = null;
+let authPlayerName = sessionStorage.getItem("glPlayer") || "";
+let authSetupPlayer = null;
+let authNewMode = false;
+let authRequireOldPassword = false;
+const pageSize = 10;
+const listPages = { banners: 1, stages: 1, rolls: 1, pulls: 1, characters: 1, audit: 1 };
 
 function checkSession() { return sessionStorage.getItem("glAuthed") === "1"; }
 function resolveAuth(pw) {
   sitePassword = (pw && String(pw).trim()) || "1234";
   if (checkSession()) hideAuthOverlay();
+}
+async function passwordHash(password) {
+  const data = new TextEncoder().encode(String(password));
+  const digest = await crypto.subtle.digest("SHA-256", data);
+  return [...new Uint8Array(digest)].map(b => b.toString(16).padStart(2, "0")).join("");
+}
+function findPlayerByName(name) {
+  const wanted = String(name || "").trim().toLocaleLowerCase();
+  return Object.entries(state.players).find(([, p]) =>
+    p && String(p.name || "").trim().toLocaleLowerCase() === wanted
+  ) || null;
+}
+function savePlayerPassword(name, hash) {
+  const found = findPlayerByName(name);
+  if (!found) return Promise.reject(new Error("Player not found"));
+  const [id, player] = found;
+  const updated = { ...player, passwordHash: hash };
+  if (mode === "firebase") {
+    const result = db.ref("players/" + id).set(updated);
+    recordAudit("password", "player", id, player.name);
+    return result;
+  }
+  state.players[id] = updated;
+  saveLocal();
+  recordAudit("password", "player", id, player.name);
+  render();
+  return Promise.resolve();
+}
+function completeAuth(name) {
+  authPlayerName = name || "";
+  sessionStorage.setItem("glPlayer", authPlayerName);
+  sessionStorage.setItem("glAuthed", "1");
+  hideAuthOverlay();
+  renderPlayerSelects();
+}
+function showPasswordSetup(name, optional = false, requireOld = false) {
+  authSetupPlayer = name;
+  authRequireOldPassword = requireOld;
+  document.getElementById("authOverlay").hidden = false;
+  document.getElementById("authForm").hidden = true;
+  document.getElementById("createUserForm").hidden = true;
+  document.getElementById("showCreateUserBtn").hidden = true;
+  document.getElementById("passwordSetupForm").hidden = false;
+  document.getElementById("passwordSetupText").textContent = optional
+    ? `ตั้งรหัสผ่านส่วนตัวสำหรับ ${name} หรือใช้งานต่อด้วยรหัสผ่านระบบก็ได้`
+    : requireOld ? `กรุณาใส่รหัสผ่านเดิมก่อนตั้งรหัสผ่านใหม่` : `ตั้งรหัสผ่านส่วนตัวสำหรับ ${name}`;
+  document.getElementById("oldPasswordInput").hidden = !requireOld;
+  document.getElementById("oldPasswordInput").required = requireOld;
+  document.getElementById("newPasswordInput").hidden = requireOld;
+  document.getElementById("newPasswordInput").required = !requireOld;
+  document.getElementById("newPasswordConfirmInput").hidden = requireOld;
+  document.getElementById("newPasswordConfirmInput").required = !requireOld;
+  const passwordSubmit = document.querySelector('#passwordSetupForm button[type="submit"]');
+  passwordSubmit.hidden = false;
+  passwordSubmit.textContent = requireOld ? "ตรวจสอบรหัสผ่านเดิม" : "บันทึกรหัสผ่าน";
+  document.getElementById("skipPasswordSetupBtn").hidden = requireOld;
+  document.getElementById(requireOld ? "oldPasswordInput" : "newPasswordInput").focus();
+}
+function closeAuthOverlay() {
+  document.getElementById("passwordSetupForm").hidden = true;
+  document.getElementById("authForm").hidden = false;
+  document.getElementById("createUserForm").hidden = true;
+  document.getElementById("showCreateUserBtn").hidden = false;
+  document.getElementById("oldPasswordInput").hidden = true;
+  document.getElementById("oldPasswordInput").required = false;
+  document.getElementById("newPasswordInput").hidden = false;
+  document.getElementById("newPasswordInput").required = true;
+  document.getElementById("newPasswordConfirmInput").hidden = false;
+  document.getElementById("newPasswordConfirmInput").required = true;
+  document.querySelector('#passwordSetupForm button[type="submit"]').hidden = false;
+  document.getElementById("skipPasswordSetupBtn").hidden = false;
+  hideAuthOverlay();
 }
 function hideAuthOverlay() {
   const el = document.getElementById("authOverlay");
@@ -94,6 +173,7 @@ function loadLocal() {
         state.players    = old.players  || {};
         state.rollLog    = old.rollLog  || {};
         state.pullLog    = old.pullLog  || {};
+        state.auditLog   = old.auditLog || {};
         state.banners    = {};
         state.characters = {};
         saveLocal();
@@ -106,6 +186,7 @@ function loadLocal() {
       state.players    = p.players    || {};
       state.rollLog    = p.rollLog    || {};
       state.pullLog    = p.pullLog    || {};
+      state.auditLog   = p.auditLog   || {};
     }
   } catch (e) { console.warn("โหลด localStorage ล้มเหลว", e); }
   resolveAuth(localStorage.getItem("glPassword"));
@@ -115,6 +196,18 @@ function loadLocal() {
 function saveLocal() { localStorage.setItem(LOCAL_KEY, JSON.stringify(state)); }
 
 function uid() { return Date.now().toString(36) + Math.random().toString(36).slice(2, 8); }
+function recordAudit(action, entity, entityId, details) {
+  const entry = {
+    ts: Date.now(),
+    actor: authPlayerName || "system",
+    action,
+    entity,
+    entityId: entityId || "",
+    details: details || "",
+  };
+  if (mode === "firebase") db.ref("auditLog").push(entry);
+  else { state.auditLog[uid()] = entry; saveLocal(); render(); }
+}
 
 // -------------------------------------------------------------------------
 // Firebase / init
@@ -158,6 +251,7 @@ function attachFirebaseListeners() {
   db.ref("players").on("value", snap => { state.players = snap.val() || {}; render(); });
   db.ref("rollLog").on("value", snap => { state.rollLog = snap.val() || {}; render(); });
   db.ref("pullLog").on("value", snap => { state.pullLog = snap.val() || {}; render(); });
+  db.ref("auditLog").on("value", snap => { state.auditLog = snap.val() || {}; render(); });
 }
 
 function setConnStatus(kind, text) {
@@ -180,20 +274,24 @@ function addPlayer(name) {
   const id = uid();
   if (mode === "firebase") db.ref("players/" + id).set({ name });
   else { state.players[id] = { name }; saveLocal(); render(); }
+  recordAudit("add", "player", id, name);
 }
 function removePlayer(id) {
   if (mode === "firebase") db.ref("players/" + id).remove();
   else { delete state.players[id]; saveLocal(); render(); }
+  recordAudit("delete", "player", id, "");
 }
 
 function addBanner(banner) {
   const id = uid();
   if (mode === "firebase") db.ref("banners/" + id).set(banner);
   else { state.banners[id] = banner; saveLocal(); render(); }
+  recordAudit("add", "banner", id, banner.name);
 }
 function removeBanner(id) {
   if (mode === "firebase") db.ref("banners/" + id).remove();
   else { delete state.banners[id]; saveLocal(); render(); }
+  recordAudit("delete", "banner", id, "");
 }
 
 function addCharacter(char) {
@@ -205,6 +303,7 @@ function addCharacter(char) {
      state.characters[id] = char;
      saveLocal();
    }
+   recordAudit("add", "character", id, char.name);
    render();
 }
 function updateCharacter(id, data) {
@@ -215,11 +314,13 @@ function updateCharacter(id, data) {
      state.characters[id] = { ...state.characters[id], ...data };
      saveLocal();
    }
+   recordAudit("update", "character", id, data.name || state.characters[id]?.name || "");
    render();
 }
 function removeCharacter(id) {
   if (mode === "firebase") db.ref("characters/" + id).remove();
   else { delete state.characters[id]; saveLocal(); render(); }
+  recordAudit("delete", "character", id, "");
 }
 
 function addStage(stage) {
@@ -227,10 +328,12 @@ function addStage(stage) {
   state.settings.stages = state.settings.stages || {};
   state.settings.stages[id] = stage;
   persistSettings();
+  recordAudit("add", "stage", id, stage.name);
 }
 function removeStage(id) {
   if (state.settings.stages) delete state.settings.stages[id];
   persistSettings();
+  recordAudit("delete", "stage", id, "");
 }
 
 // backward compat: char เก่ามี breaker:bool → แปลงเป็น role string
@@ -352,8 +455,25 @@ function fmtDate(ts) {
 }
 function playerNames()   { return Object.values(state.players).map(p => p.name); }
 function bannerEntries() { return Object.entries(state.banners); }
+function pageItems(items, kind) {
+  const totalPages = Math.max(1, Math.ceil(items.length / pageSize));
+  listPages[kind] = Math.min(Math.max(listPages[kind] || 1, 1), totalPages);
+  const start = (listPages[kind] - 1) * pageSize;
+  return { rows: items.slice(start, start + pageSize), totalPages };
+}
+function renderPager(kind, totalPages) {
+  const el = document.getElementById(kind + "Pager");
+  if (!el) return;
+  const page = listPages[kind];
+  el.innerHTML = totalPages > 1
+    ? `<button type="button" class="btn-secondary btn-sm" data-page-kind="${kind}" data-page="${page - 1}" ${page <= 1 ? "disabled" : ""}>‹</button>
+       <span class="hint small">${page} / ${totalPages}</span>
+       <button type="button" class="btn-secondary btn-sm" data-page-kind="${kind}" data-page="${page + 1}" ${page >= totalPages ? "disabled" : ""}>›</button>`
+    : "";
+}
 
 function render() {
+  renderAuthPlayerSelect();
   renderPlayerSelects();
   renderBannerSelects();
   renderPlayerChips();
@@ -364,12 +484,47 @@ function render() {
   renderCharacterList();
   renderRollLogTable();
   renderPullLogTable();
+  renderAuditTable();
   renderDashboard();
+}
+
+function renderAuthPlayerSelect() {
+  const sel = document.getElementById("authPlayerSelect");
+  if (!sel || authNewMode) return;
+  const names = playerNames();
+  sel.innerHTML = names.length
+    ? names.map(n => `<option value="${esc(n)}">${esc(n)}</option>`).join("")
+    : `<option value="">No nicknames yet — create one below</option>`;
+  if (names.includes(authPlayerName)) sel.value = authPlayerName;
+}
+
+function renderAuditTable() {
+  const tbody = document.getElementById("auditBody");
+  if (!tbody) return;
+  const allRows = Object.values(state.auditLog || {}).sort((a, b) => b.ts - a.ts);
+  const page = pageItems(allRows, "audit");
+  renderPager("audit", page.totalPages);
+  tbody.innerHTML = page.rows.length
+    ? page.rows.map(entry => `<tr>
+        <td>${fmtDate(entry.ts)}</td>
+        <td class="name">${esc(entry.actor || "system")}</td>
+        <td>${esc(entry.action || "")}</td>
+        <td>${esc(entry.entity || "")}</td>
+        <td class="name">${esc(entry.details || entry.entityId || "")}</td>
+      </tr>`).join("")
+    : `<tr><td colspan="5" class="empty-hint">ยังไม่มีบันทึก Audit</td></tr>`;
 }
 
 function renderPlayerSelects() {
   const names = playerNames();
   const sel   = document.getElementById("rollPlayerSelect");
+  if (!sel) return;
+  if (authPlayerName && names.includes(authPlayerName)) {
+    sel.innerHTML = `<option value="${esc(authPlayerName)}">${esc(authPlayerName)}</option>`;
+    sel.disabled = true;
+    return;
+  }
+  sel.disabled = false;
   const prev  = sel.value;
   sel.innerHTML = names.length
     ? names.map(n => `<option value="${esc(n)}">${esc(n)}</option>`).join("")
@@ -393,18 +548,19 @@ function renderBannerSelects() {
 function renderPlayerChips() {
   const ul      = document.getElementById("playerList");
   const entries = Object.entries(state.players);
-  ul.innerHTML  = entries.length
-    ? entries.map(([id, p]) =>
-        `<li>${esc(p.name)} <button data-remove-player="${id}" title="ลบ">×</button></li>`
-      ).join("")
-    : `<li class="hint small">ยังไม่มีผู้เล่น</li>`;
+  ul.innerHTML = entries.length
+    ? entries.map(([, p]) => `<li>${esc(p.name)}</li>`).join("")
+    : `<li class="hint small">à¸¢à¸±à¸‡à¹„à¸¡à¹ˆà¸¡à¸µà¸œà¸¹à¹‰à¹€à¸¥à¹ˆà¸™</li>`;
 }
 
 function renderBannerChips() {
   const ul      = document.getElementById("bannerList");
   const entries = bannerEntries();
+  const page = pageItems(entries, "banners");
+  const visibleEntries = page.rows;
+  renderPager("banners", page.totalPages);
   ul.innerHTML  = entries.length
-    ? entries.map(([id, b]) => {
+    ? visibleEntries.map(([id, b]) => {
         const r5 = b.rate5star !== undefined ? `5★ ${b.rate5star}%` : `5★ 12%`;
         return `<li>
           <span class="banner-chip-name">${esc(b.name)}</span>
@@ -449,8 +605,10 @@ function renderStageTable() {
   const tbody   = document.getElementById("stageBody");
   const stages  = state.settings.stages || {};
   const entries = Object.entries(stages);
+  const page = pageItems(entries, "stages");
+  renderPager("stages", page.totalPages);
   tbody.innerHTML = entries.length
-    ? entries.map(([id, st]) => {
+    ? page.rows.map(([id, st]) => {
         const diffDisplay = st.difficulty !== undefined ? st.difficulty : `${fmt(st.weight, 2)} (เก่า)`;
         const pts = stagePointsOf(st, state.settings);
         return `<tr>
@@ -468,8 +626,10 @@ function renderCharacterList() {
   const tbody = document.getElementById("charBody");
   if (!tbody) return;
   const entries = Object.entries(state.characters).sort((a, b) => a[1].name.localeCompare(b[1].name, "th"));
+  const page = pageItems(entries, "characters");
+  renderPager("characters", page.totalPages);
   tbody.innerHTML = entries.length
-    ? entries.map(([id, c]) => {
+    ? page.rows.map(([id, c]) => {
         const catLabel = CATEGORIES.find(x => x.key === c.category)?.label || c.category;
         const role     = getCharRole(c);
         const roleBadge = role === "meta"
@@ -492,7 +652,10 @@ function renderCharacterList() {
 
 function renderRollLogTable() {
   const tbody = document.getElementById("rollLogBody");
-  const rows  = Object.values(state.rollLog).sort((a, b) => b.ts - a.ts).slice(0, 100);
+  const allRows = Object.values(state.rollLog).sort((a, b) => b.ts - a.ts);
+  const page = pageItems(allRows, "rolls");
+  const rows = page.rows;
+  renderPager("rolls", page.totalPages);
   tbody.innerHTML = rows.length
     ? rows.map(r => {
         const banner     = r.bannerId && state.banners[r.bannerId];
@@ -547,7 +710,10 @@ function renderPullLogTable() {
   const tbody = document.getElementById("pullLogBody");
   if (!tbody) return;
   const s    = state.settings;
-  const rows = Object.values(state.pullLog).sort((a, b) => b.ts - a.ts).slice(0, 300);
+  const allRows = Object.values(state.pullLog).sort((a, b) => b.ts - a.ts);
+  const page = pageItems(allRows, "pulls");
+  const rows = page.rows;
+  renderPager("pulls", page.totalPages);
   tbody.innerHTML = rows.length
     ? rows.map(p => {
         const cat       = CATEGORIES.find(c => c.key === p.category)?.label || p.category;
@@ -721,17 +887,95 @@ let editingCharId = null;
 
 document.addEventListener("DOMContentLoaded", () => {
 
+  document.addEventListener("click", e => {
+    if (!(e.target instanceof Element)) return;
+    const button = e.target.closest("[data-page-kind]");
+    if (!button || button.disabled) return;
+    listPages[button.dataset.pageKind] = Number(button.dataset.page);
+    render();
+  });
+
   // ── Auth ──────────────────────────────────────────────────────────────
-  document.getElementById("authForm").addEventListener("submit", e => {
+  document.getElementById("authPlayerSelect").hidden = true;
+  document.getElementById("authNewPlayerBtn").hidden = true;
+  document.getElementById("authNewPlayerFields").hidden = true;
+  document.getElementById("authConfirmInput").hidden = true;
+  const authError = document.getElementById("authError");
+  const clearAuthError = () => { authError.hidden = true; authError.textContent = ""; };
+  document.querySelectorAll("#authOverlay input").forEach(input => input.addEventListener("input", clearAuthError));
+  setInterval(() => { if (!authError.hidden) clearAuthError(); }, 5000);
+  document.getElementById("showCreateUserBtn").addEventListener("click", () => {
+    document.getElementById("authForm").hidden = true;
+    document.getElementById("createUserForm").hidden = false;
+    document.getElementById("showCreateUserBtn").hidden = true;
+    document.getElementById("createUsernameInput").focus();
+  });
+  document.getElementById("backToLoginBtn").addEventListener("click", () => {
+    document.getElementById("createUserForm").hidden = true;
+    document.getElementById("authForm").hidden = false;
+    document.getElementById("showCreateUserBtn").hidden = false;
+  });
+  document.getElementById("createUserForm").addEventListener("submit", async e => {
     e.preventDefault();
     const errEl = document.getElementById("authError");
+    const name = document.getElementById("createUsernameInput").value.trim();
+    const pw = document.getElementById("createPasswordInput").value;
+    const confirmPw = document.getElementById("createPasswordConfirmInput").value;
+    if (!name) { errEl.textContent = "กรุณาใส่ชื่อผู้ใช้"; errEl.hidden = false; return; }
+    if (!pw || pw !== confirmPw) { errEl.textContent = "รหัสผ่านไม่ตรงกัน"; errEl.hidden = false; return; }
+    if (findPlayerByName(name)) { errEl.textContent = "มีชื่อผู้ใช้นี้อยู่แล้ว"; errEl.hidden = false; return; }
+    const player = { name, passwordHash: await passwordHash(pw) };
+    const id = uid();
+    if (mode === "firebase") db.ref("players/" + id).set(player);
+    else { state.players[id] = player; saveLocal(); render(); }
+    completeAuth(name);
+  });
+
+  document.getElementById("authNewPlayerBtn").addEventListener("click", () => {
+    authNewMode = !authNewMode;
+    document.getElementById("authPlayerSelect").hidden = authNewMode;
+    document.getElementById("authNewPlayerFields").hidden = !authNewMode;
+    document.getElementById("authConfirmInput").hidden = !authNewMode;
+    document.getElementById("authNewPlayerBtn").textContent = authNewMode ? "Use existing nickname" : "+ Create new nickname";
+    if (authNewMode) document.getElementById("authNewPlayerName").focus();
+    else renderAuthPlayerSelect();
+  });
+
+  document.getElementById("authForm").addEventListener("submit", async e => {
+    e.preventDefault();
+    const errEl = document.getElementById("authError");
+    if (sitePassword === null) { errEl.textContent = "กำลังโหลดการตั้งค่ารหัสผ่าน กรุณารอสักครู่"; errEl.hidden = false; return; }
+    const val = document.getElementById("authInput").value;
+    const name = document.getElementById("authUsernameInput").value.trim();
+    if (authNewMode) {
+      if (!name) { errEl.textContent = "Enter a nickname"; errEl.hidden = false; return; }
+      if (!val || val !== document.getElementById("authConfirmInput").value) { errEl.textContent = "รหัสผ่านไม่ตรงกัน"; errEl.hidden = false; return; }
+      if (findPlayerByName(name)) { errEl.textContent = "That nickname already exists"; errEl.hidden = false; return; }
+      const player = { name, passwordHash: await passwordHash(val) };
+      const id = uid();
+      if (mode === "firebase") db.ref("players/" + id).set(player);
+      else { state.players[id] = player; saveLocal(); render(); }
+      completeAuth(name);
+      return;
+    }
+    if (!name) { errEl.textContent = "กรุณาใส่ชื่อผู้ใช้"; errEl.hidden = false; return; }
+    const found = findPlayerByName(name);
+    if (!found) { errEl.textContent = "ไม่พบชื่อผู้ใช้นี้ในระบบ"; errEl.hidden = false; return; }
+    const canonicalName = found[1].name;
+    const storedHash = found?.[1]?.passwordHash;
+    const validPersonal = storedHash && storedHash === await passwordHash(val);
+    if (validPersonal || (!storedHash && val === sitePassword)) {
+      completeAuth(canonicalName);
+      if (!storedHash && val === sitePassword) showPasswordSetup(canonicalName, true);
+      return;
+    }
     if (sitePassword === null) {
       errEl.textContent = "⏳ กำลังโหลด กรุณารอสักครู่…";
       errEl.hidden = false;
       return;
     }
-    const val = document.getElementById("authInput").value;
-    if (val === sitePassword) {
+    const legacyVal = document.getElementById("authInput").value;
+    if (false && legacyVal === sitePassword) {
       sessionStorage.setItem("glAuthed", "1");
       hideAuthOverlay();
     } else {
@@ -743,6 +987,58 @@ document.addEventListener("DOMContentLoaded", () => {
   });
 
   // ── Tabs ──────────────────────────────────────────────────────────────
+  document.getElementById("passwordSetupForm").addEventListener("submit", async e => {
+    e.preventDefault();
+    const errEl = document.getElementById("authError");
+    if (authRequireOldPassword) {
+      const found = findPlayerByName(authSetupPlayer);
+      const storedHash = found?.[1]?.passwordHash;
+      const oldPassword = document.getElementById("oldPasswordInput").value;
+      const oldValid = storedHash
+        ? storedHash === await passwordHash(oldPassword)
+        : oldPassword === sitePassword;
+      if (!oldValid) { errEl.textContent = "รหัสผ่านเดิมไม่ถูกต้อง"; errEl.hidden = false; return; }
+      authRequireOldPassword = false;
+      document.getElementById("oldPasswordInput").hidden = true;
+      document.getElementById("oldPasswordInput").required = false;
+      document.getElementById("newPasswordInput").hidden = false;
+      document.getElementById("newPasswordInput").required = true;
+      document.getElementById("newPasswordConfirmInput").hidden = false;
+      document.getElementById("newPasswordConfirmInput").required = true;
+      document.querySelector('#passwordSetupForm button[type="submit"]').hidden = false;
+      document.querySelector('#passwordSetupForm button[type="submit"]').textContent = "บันทึกรหัสผ่าน";
+      document.getElementById("skipPasswordSetupBtn").hidden = false;
+      document.getElementById("passwordSetupText").textContent = `ตั้งรหัสผ่านใหม่สำหรับ ${authSetupPlayer}`;
+      document.getElementById("newPasswordInput").focus();
+      return;
+    }
+    const pw = document.getElementById("newPasswordInput").value;
+    const confirmPw = document.getElementById("newPasswordConfirmInput").value;
+    if (!pw || pw !== confirmPw) { errEl.textContent = "รหัสผ่านไม่ตรงกัน"; errEl.hidden = false; return; }
+    await savePlayerPassword(authSetupPlayer, await passwordHash(pw));
+    closeAuthOverlay();
+  });
+  document.getElementById("skipPasswordSetupBtn").addEventListener("click", closeAuthOverlay);
+  document.getElementById("changePasswordBtn").addEventListener("click", () => {
+    if (!checkSession() || !authPlayerName) return;
+    document.getElementById("authOverlay").hidden = false;
+    showPasswordSetup(authPlayerName, false, true);
+  });
+  document.getElementById("logoutBtn").addEventListener("click", () => {
+    sessionStorage.removeItem("glAuthed");
+    sessionStorage.removeItem("glPlayer");
+    authPlayerName = "";
+    document.getElementById("authOverlay").hidden = false;
+    document.getElementById("authForm").hidden = false;
+    document.getElementById("createUserForm").hidden = true;
+    document.getElementById("passwordSetupForm").hidden = true;
+    document.getElementById("showCreateUserBtn").hidden = false;
+    document.getElementById("authUsernameInput").value = "";
+    document.getElementById("authInput").value = "";
+    renderPlayerSelects();
+    document.getElementById("authUsernameInput").focus();
+  });
+
   document.querySelectorAll(".tab-btn").forEach(btn => {
     btn.addEventListener("click", () => {
       document.querySelectorAll(".tab-btn").forEach(b => b.classList.remove("active"));
@@ -767,7 +1063,7 @@ document.addEventListener("DOMContentLoaded", () => {
   // ── Roll form ─────────────────────────────────────────────────────────
   document.getElementById("rollForm").addEventListener("submit", e => {
     e.preventDefault();
-    const player   = document.getElementById("rollPlayerSelect").value;
+    const player   = authPlayerName || document.getElementById("rollPlayerSelect").value;
     const bannerId = document.getElementById("rollBannerSelect").value;
     const hoshi    = document.getElementById("rollHoshi").checked;
     const rolls    = hoshi ? 1 : Number(document.getElementById("rollCount").value);
@@ -836,6 +1132,7 @@ document.addEventListener("DOMContentLoaded", () => {
       pullItems.forEach(p => { state.pullLog[uid()] = p; });
       saveLocal(); render();
     }
+    recordAudit("add", "roll", "", `${player} (${rolls} rolls)`);
 
     document.getElementById("sessionPullList").innerHTML = "";
     document.getElementById("rollCount").value           = 1;
@@ -854,6 +1151,7 @@ document.addEventListener("DOMContentLoaded", () => {
     input.value = "";
   });
   document.getElementById("playerList").addEventListener("click", e => {
+    return;
     const id = e.target.dataset.removePlayer;
     if (id && confirm("ลบผู้เล่นนี้? (ประวัติ log เดิมจะยังอยู่แต่จะไม่โผล่ในดรอปดาวน์)"))
       removePlayer(id);
@@ -977,6 +1275,7 @@ document.addEventListener("DOMContentLoaded", () => {
     document.body.appendChild(tipEl);
 
     document.addEventListener("mouseenter", e => {
+      if (!(e.target instanceof Element)) return;
       const wrap = e.target.closest(".tip-wrap");
       if (!wrap) return;
       const src = wrap.querySelector(".tip-box");
@@ -996,6 +1295,7 @@ document.addEventListener("DOMContentLoaded", () => {
     }, true);
 
     document.addEventListener("mouseleave", e => {
+      if (!(e.target instanceof Element)) return;
       if (e.target.closest(".tip-wrap")) tipEl.style.display = "none";
     }, true);
   })();

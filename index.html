@@ -17,9 +17,33 @@
     <div class="auth-logo"><span class="dot"></span><h2>Gacha Luck Tracker</h2></div>
     <p class="hint" style="margin-top:6px">กรุณาใส่รหัสผ่านเพื่อเข้าใช้งาน</p>
     <form id="authForm" class="auth-form">
+      <input type="text" id="authUsernameInput" placeholder="ชื่อผู้ใช้" autocomplete="username" required>
+      <select id="authPlayerSelect" required></select>
+      <button type="button" id="authNewPlayerBtn" class="btn-secondary">+ Create new nickname</button>
+      <div id="authNewPlayerFields" hidden>
+        <input type="text" id="authNewPlayerName" placeholder="New nickname" autocomplete="nickname">
+      </div>
+      <input type="password" id="authConfirmInput" placeholder="Confirm password" autocomplete="new-password" hidden>
       <input type="password" id="authInput" placeholder="รหัสผ่าน" autocomplete="current-password" required>
       <button type="submit" class="btn-primary">เข้าสู่ระบบ</button>
     </form>
+    <form id="createUserForm" class="auth-form" hidden>
+      <h3>สร้างผู้ใช้</h3>
+      <input type="text" id="createUsernameInput" placeholder="ชื่อผู้ใช้" autocomplete="username" required>
+      <input type="password" id="createPasswordInput" placeholder="รหัสผ่าน" autocomplete="new-password" required>
+      <input type="password" id="createPasswordConfirmInput" placeholder="ยืนยันรหัสผ่าน" autocomplete="new-password" required>
+      <button type="submit" class="btn-primary">สร้างผู้ใช้</button>
+      <button type="button" id="backToLoginBtn" class="btn-secondary">กลับไปหน้าเข้าสู่ระบบ</button>
+    </form>
+    <form id="passwordSetupForm" class="auth-form" hidden>
+      <p id="passwordSetupText" class="hint"></p>
+      <input type="password" id="oldPasswordInput" placeholder="รหัสผ่านเดิม" autocomplete="current-password" hidden>
+      <input type="password" id="newPasswordInput" placeholder="รหัสผ่านใหม่" autocomplete="new-password" required>
+      <input type="password" id="newPasswordConfirmInput" placeholder="ยืนยันรหัสผ่านใหม่" autocomplete="new-password" required>
+      <button type="submit" class="btn-primary">บันทึกรหัสผ่าน</button>
+      <button type="button" id="skipPasswordSetupBtn" class="btn-secondary">เข้าใช้งานโดยไม่เปลี่ยน</button>
+    </form>
+    <button type="button" id="showCreateUserBtn" class="btn-secondary btn-sm">Create new user</button>
     <p id="authError" class="auth-error" hidden></p>
   </div>
 </div>
@@ -35,6 +59,7 @@
   <button class="tab-btn active" data-tab="dashboard">แดชบอร์ด</button>
   <button class="tab-btn" data-tab="logroll">บันทึกโรล</button>
   <button class="tab-btn" data-tab="settings">ตั้งค่า</button>
+  <button class="tab-btn" data-tab="audit">Audit</button>
 </nav>
 
 <main class="container">
@@ -104,6 +129,7 @@
         <thead><tr><th>เวลา</th><th>ผู้เล่น</th><th>ตู้</th><th>จำนวนโรล</th><th>โฮชิ</th></tr></thead>
         <tbody id="rollLogBody"></tbody>
       </table>
+      <div id="rollsPager" class="list-pager"></div>
     </div>
 
     <div class="panel-head" style="margin-top:28px">
@@ -118,6 +144,22 @@
         </tr></thead>
         <tbody id="pullLogBody"></tbody>
       </table>
+      <div id="pullsPager" class="list-pager"></div>
+    </div>
+  </section>
+
+  <!-- ================= AUDIT ================= -->
+  <section id="tab-audit" class="tab-panel">
+    <div class="panel-head">
+      <h2>Audit log</h2>
+      <p class="hint">บันทึกการเพิ่ม แก้ไข และลบข้อมูลแบบแก้ไขย้อนหลังไม่ได้</p>
+    </div>
+    <div class="table-scroll">
+      <table>
+        <thead><tr><th>เวลา</th><th>ผู้ใช้</th><th>การทำงาน</th><th>ประเภท</th><th>รายละเอียด</th></tr></thead>
+        <tbody id="auditBody"></tbody>
+      </table>
+      <div id="auditPager" class="list-pager"></div>
     </div>
   </section>
 
@@ -132,11 +174,21 @@
 
       <div class="card">
         <h3>ผู้เล่น</h3>
+        <p class="hint small">ผู้ใช้ใหม่จะยังไม่มีรหัสผ่านส่วนตัว ให้เข้าสู่ระบบครั้งแรกด้วยรหัสผ่านระบบ แล้วตั้งรหัสผ่านของตนเอง</p>
         <form id="playerForm" class="inline-form">
           <input type="text" id="newPlayerName" placeholder="ชื่อผู้เล่นใหม่" required>
           <button type="submit" class="btn-secondary">+ เพิ่ม</button>
         </form>
         <ul id="playerList" class="chip-list"></ul>
+      </div>
+
+      <div class="card">
+        <h3>บัญชีผู้ใช้</h3>
+        <p class="hint small">จัดการรหัสผ่านหรือออกจากระบบ</p>
+        <div style="display:flex;gap:8px;margin-top:12px;flex-wrap:wrap">
+          <button type="button" id="changePasswordBtn" class="btn-secondary">เปลี่ยนรหัสผ่าน</button>
+          <button type="button" id="logoutBtn" class="btn-secondary">ออกจากระบบ</button>
+        </div>
       </div>
 
       <div class="card card-wide">
@@ -159,6 +211,7 @@
           </div>
         </form>
         <ul id="bannerList" class="chip-list banner-chip-list"></ul>
+        <div id="bannersPager" class="list-pager"></div>
       </div>
 
       <div class="card card-wide">
@@ -182,6 +235,7 @@
             <thead><tr><th>ชื่อ</th><th>ประเภท</th><th>Breaker</th><th></th></tr></thead>
             <tbody id="charBody"></tbody>
           </table>
+          <div id="charactersPager" class="list-pager"></div>
         </div>
       </div>
 
@@ -221,8 +275,9 @@
         <div class="table-scroll">
           <table>
             <thead><tr><th>ชื่อด่าน</th><th>ความยาก</th><th>Monthly</th><th>แต้มรวม</th><th></th></tr></thead>
-            <tbody id="stageBody"></tbody>
+        <tbody id="stageBody"></tbody>
           </table>
+          <div id="stagesPager" class="list-pager"></div>
         </div>
       </div>
 
