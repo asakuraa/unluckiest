@@ -63,6 +63,7 @@ let authSetupPlayer = null;
 let authNewMode = false;
 let authRequireOldPassword = false;
 const pageSize = 10;
+const ORB_WEIGHT = 0.2;
 const listPages = { banners: 1, stages: 1, rolls: 1, pulls: 1, characters: 1, audit: 1, orbs: 1 };
 
 function checkSession() { return sessionStorage.getItem("glAuthed") === "1"; }
@@ -457,9 +458,9 @@ function computePlayerStats(playerName) {
     ...bd,
     total: Object.values(bd.rateData).reduce((acc, r) => acc + r.normalTotal + r.hoshiTotal, 0),
   }));
-  const actualPoints = pullActualPoints + orbActual;
-  expectedPoints += orbExpected;
-  const orbVariance = playerOrbs.length * ((300 - 100) ** 2 / 12);
+  const actualPoints = pullActualPoints + (orbActual * ORB_WEIGHT);
+  expectedPoints += (orbExpected * ORB_WEIGHT);
+  const orbVariance = playerOrbs.length * ((300 - 100) ** 2 / 12) * (ORB_WEIGHT ** 2);
   const scoreSd = Math.sqrt(scoreVariance + orbVariance);
   const deviation = actualPoints - expectedPoints;
 
@@ -827,7 +828,7 @@ function buildExpectedTip(breakdown, expectedPoints, orbExpected = 0) {
     parts.push(`  รวมตู้นี้:  ${fmt(bd.total, 1)} pts`);
     parts.push("─────────────────────────────────────────");
   }
-  if (orbExpected > 0) parts.push(`Orb expected: ${fmt(orbExpected, 2)}`);
+  if (orbExpected > 0) parts.push(`Orb expected (÷5): ${fmt(orbExpected * ORB_WEIGHT, 2)}`);
   parts.push(`รวมทั้งหมด  ${fmt(expectedPoints, 1)} pts`);
   parts.push("");
   parts.push("ปกติ : rolls × rate%       × Base");
