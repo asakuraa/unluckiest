@@ -523,6 +523,7 @@ function renderPager(kind, totalPages) {
 
 function render() {
   renderAuthPlayerSelect();
+  renderLoginUserSelect();
   renderPlayerSelects();
   renderOrbPlayerSelect();
   renderDashboardFilters();
@@ -548,6 +549,19 @@ function renderAuthPlayerSelect() {
     ? names.map(n => `<option value="${esc(n)}">${esc(n)}</option>`).join("")
     : `<option value="">No nicknames yet — create one below</option>`;
   if (names.includes(authPlayerName)) sel.value = authPlayerName;
+}
+
+function renderLoginUserSelect() {
+  const sel = document.getElementById("authUsernameInput");
+  if (!sel || sel.tagName !== "SELECT") return;
+  const entries = Object.entries(state.players || {})
+    .map(([, p]) => p?.name)
+    .filter(Boolean)
+    .sort((a, b) => String(a).localeCompare(String(b), "th"));
+  const current = sel.value;
+  sel.innerHTML = `<option value="" disabled ${current ? "" : "selected"}>— เลือกชื่อผู้ใช้ —</option>` +
+    (entries.length ? entries.map(n => `<option value="${esc(n)}">${esc(n)}</option>`).join("") : "");
+  if (entries.includes(current)) sel.value = current;
 }
 
 function renderDashboardFilters() {
@@ -1052,7 +1066,7 @@ document.addEventListener("DOMContentLoaded", () => {
   document.getElementById("authConfirmInput").hidden = true;
   const authError = document.getElementById("authError");
   const clearAuthError = () => { authError.hidden = true; authError.textContent = ""; };
-  document.querySelectorAll("#authOverlay input").forEach(input => input.addEventListener("input", clearAuthError));
+  document.querySelectorAll("#authOverlay input, #authOverlay select").forEach(el => el.addEventListener("input", clearAuthError));
   setInterval(() => { if (!authError.hidden) clearAuthError(); }, 5000);
   document.getElementById("showCreateUserBtn").addEventListener("click", () => {
     document.getElementById("authForm").hidden = true;
