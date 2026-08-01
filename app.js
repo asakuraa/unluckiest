@@ -65,6 +65,17 @@ let authRequireOldPassword = false;
 const pageSize = 10;
 const ORB_WEIGHT = 0.2;
 const listPages = { banners: 1, stages: 1, rolls: 1, pulls: 1, characters: 1, audit: 1, orbs: 1 };
+const dashboardFilters = {
+  includeOrbs: sessionStorage.getItem("glDashIncludeOrbs") !== "0",
+  bannerIds: (() => {
+    const raw = sessionStorage.getItem("glDashBannerIds");
+    if (raw) {
+      try { return (JSON.parse(raw) || []).map(String).filter(Boolean); } catch {}
+    }
+    const legacy = sessionStorage.getItem("glDashBannerId") || "";
+    return legacy ? [legacy] : [];
+  })(),
+};
 
 function checkSession() { return sessionStorage.getItem("glAuthed") === "1"; }
 function resolveAuth(pw) {
@@ -385,11 +396,21 @@ function getPullScore(pull, s) {
 // -------------------------------------------------------------------------
 // Dashboard computation
 // -------------------------------------------------------------------------
-function computePlayerStats(playerName) {
+function computePlayerStats(playerName, opts = {}) {
   const s = state.settings;
-  const playerRolls = Object.values(state.rollLog).filter(r => r.player === playerName);
-  const playerPulls = Object.values(state.pullLog).filter(p => p.player === playerName);
-  const playerOrbs  = Object.values(state.orbLog || {}).filter(o => o.player === playerName);
+  const bannerIds = Array.isArray(opts.bannerIds) ? opts.bannerIds.filter(Boolean) : [];
+  const bannerSet = bannerIds.length ? new Set(bannerIds) : null;
+  const includeOrbs = opts.includeOrbs !== false;
+
+  const playerRolls = Object.values(state.rollLog).filter(r =>
+    r.player === playerName && (!bannerSet || bannerSet.has(r.bannerId))
+  );
+  const playerPulls = Object.values(state.pullLog).filter(p =>
+    p.player === playerName && (!bannerSet || bannerSet.has(p.bannerId))
+  );
+  const playerOrbs  = includeOrbs
+    ? Object.values(state.orbLog || {}).filter(o => o.player === playerName)
+    : [];
 
   const totalRolls   = playerRolls.reduce((a, r) => a + Number(r.rolls || 0), 0);
   const pullActualPoints = playerPulls.reduce((a, p) => a + getPullScore(p, s), 0);
@@ -468,6 +489,7 @@ function computePlayerStats(playerName) {
 
   return { player: playerName, totalRolls, actualHits, expectedHits,
            actualPoints, expectedPoints, deviation, z,
+           scoreSd, scoreVariance, orbVariance, orbCount: playerOrbs.length,
            orbExpected, orbActual, orbDifference: orbActual - orbExpected, breakdown };
 }
 
@@ -503,6 +525,7 @@ function render() {
   renderAuthPlayerSelect();
   renderPlayerSelects();
   renderOrbPlayerSelect();
+  renderDashboardFilters();
   renderBannerSelects();
   renderPlayerChips();
   renderBannerChips();
@@ -525,6 +548,22 @@ function renderAuthPlayerSelect() {
     ? names.map(n => `<option value="${esc(n)}">${esc(n)}</option>`).join("")
     : `<option value="">No nicknames yet — create one below</option>`;
   if (names.includes(authPlayerName)) sel.value = authPlayerName;
+}
+
+function renderDashboardFilters() {
+  const bannerSelect = document.getElementById("dashBannerFilter");
+  const includeOrbs = document.getElementById("dashIncludeOrbs");
+  if (!bannerSelect || !includeOrbs) return;
+
+  includeOrbs.checked = !!dashboardFilters.includeOrbs;
+
+  const entries = bannerEntries();
+  bannerSelect.innerHTML = entries.length
+    ? entries.map(([bid, b]) => `<option value="${bid}">${esc(b.name)}</option>`).join("")
+    : "";
+
+  const selected = new Set((dashboardFilters.bannerIds || []).map(String));
+  [...bannerSelect.options].forEach(opt => { opt.selected = selected.has(opt.value); });
 }
 
 function renderAuditTable() {
@@ -836,11 +875,35 @@ function buildExpectedTip(breakdown, expectedPoints, orbExpected = 0) {
   return esc(parts.join("\n"));
 }
 
+function buildZTip(st) {
+  const parts = [];
+  parts.push("Z-score (คะแนน):  z = (คะแนนจริง - คะแนนคาดหวัง) / SD");
+  parts.push(`deviation = ${fmt(st.deviation, 2)} pts`);
+  parts.push(`SD        = ${fmt(st.scoreSd || 0, 2)} pts`);
+  parts.push(`z         = ${fmt(st.z, 2)}`);
+  parts.push("");
+  parts.push("Variance:");
+  parts.push(`pullVar = ${fmt(st.scoreVariance || 0, 2)}`);
+  parts.push(`orbVar  = ${fmt(st.orbVariance || 0, 2)}  (n=${st.orbCount || 0}, weight=${ORB_WEIGHT})`);
+  parts.push("SD = sqrt(pullVar + orbVar)");
+  if ((st.orbCount || 0) > 0) parts.push("orbVar = n × ((300-100)^2/12) × weight^2");
+  parts.push("");
+  if (st.breakdown?.length) {
+    const names = st.breakdown.map(b => b.name).filter(Boolean);
+    const list = names.length > 6 ? names.slice(0, 6).join(", ") + ", …" : names.join(", ");
+    parts.push(`ตู้ที่ใช้: ${list}`);
+  } else {
+    parts.push("ตู้ที่ใช้: (ไม่มีข้อมูลตู้)");
+  }
+  return esc(parts.join("\n"));
+}
+
 function renderDashboard() {
   const names     = playerNames();
   const tbody     = document.getElementById("dashboardBody");
   const emptyHint = document.getElementById("dashboardEmpty");
-  const stats     = names.map(computePlayerStats).filter(st => st.totalRolls > 0 || st.orbExpected > 0);
+  const stats     = names.map(n => computePlayerStats(n, dashboardFilters))
+    .filter(st => st.totalRolls > 0 || st.orbExpected > 0);
 
   if (!stats.length) { tbody.innerHTML = ""; emptyHint.hidden = false; return; }
   emptyHint.hidden = true;
@@ -854,6 +917,7 @@ function renderDashboard() {
     const rankClass = rank === 1 ? "rank-1" : "";
     const devClass  = st.deviation < 0 ? "z-bad" : st.deviation > 0 ? "z-good" : "";
     const expTip    = buildExpectedTip(st.breakdown, st.expectedPoints, st.orbExpected);
+    const zTip      = buildZTip(st);
     return `<tr>
       <td class="name">${esc(st.player)}</td>
       <td>${st.totalRolls}</td>
@@ -861,7 +925,7 @@ function renderDashboard() {
       <td>${fmt(st.actualPoints, 1)}</td>
       <td class="tip-wrap">${fmt(st.expectedPoints, 1)}<div class="tip-box exp-tip">${expTip}</div></td>
       <td class="${devClass}">${fmt(st.deviation, 1)}</td>
-      <td class="${zClass}">${fmt(st.z, 2)}</td>
+      <td class="tip-wrap ${zClass}">${fmt(st.z, 2)}<div class="tip-box">${zTip}</div></td>
       <td class="${rankClass}">${rank}</td>
     </tr>`;
   }).join("");
@@ -965,6 +1029,19 @@ document.addEventListener("DOMContentLoaded", () => {
     const button = e.target.closest("[data-page-kind]");
     if (!button || button.disabled) return;
     listPages[button.dataset.pageKind] = Number(button.dataset.page);
+    render();
+  });
+
+  document.getElementById("dashIncludeOrbs")?.addEventListener("change", e => {
+    dashboardFilters.includeOrbs = !!e.target.checked;
+    sessionStorage.setItem("glDashIncludeOrbs", dashboardFilters.includeOrbs ? "1" : "0");
+    render();
+  });
+  document.getElementById("dashBannerFilter")?.addEventListener("change", e => {
+    const sel = e.target;
+    const ids = [...sel.selectedOptions].map(o => String(o.value)).filter(Boolean);
+    dashboardFilters.bannerIds = ids;
+    sessionStorage.setItem("glDashBannerIds", JSON.stringify(ids));
     render();
   });
 

@@ -70,8 +70,19 @@
       <h2>เปรียบเทียบดวงผู้เล่น</h2>
       <p class="hint">Z-score ยิ่งติดลบมาก = ยิ่งซวย · แต้มคาดหวัง = Σ (rolls × rate% × Base) ทุกตู้รวมโฮชิ — hover ที่แต้มคาดหวังเพื่อดูรายละเอียด</p>
     </div>
+    <div class="card" style="margin-bottom:14px">
+      <div style="display:flex;gap:14px;flex-wrap:wrap;align-items:flex-end">
+        <label class="row" style="min-width:240px">คำนวณจากตู้
+          <select id="dashBannerFilter" multiple size="6"></select>
+        </label>
+        <label class="checkbox-line" style="margin-bottom:6px">
+          <input type="checkbox" id="dashIncludeOrbs" checked> รวม Orb ในคะแนน
+        </label>
+        <p class="hint small" style="margin:0">ไม่เลือกตู้ = ทุกตู้ · เลือกหลายตู้ให้กด Ctrl/⌘ ค้าง</p>
+      </div>
+    </div>
     <div class="table-scroll">
-      <p class="hint small">คะแนนจริงและคะแนนคาดหวังรวมค่า Orb ที่บันทึกไว้แล้ว</p>
+      <p class="hint small">คะแนนจริงและคะแนนคาดหวังรวมค่า Orb ตามตัวเลือกด้านบน</p>
       <table id="dashboardTable">
         <thead>
           <tr>
