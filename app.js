@@ -47,6 +47,7 @@ let state = {
   players:    {},
   rollLog:    {},
   pullLog:    {},
+  orbLog:     {},
   auditLog:   {},
 };
 
@@ -62,7 +63,7 @@ let authSetupPlayer = null;
 let authNewMode = false;
 let authRequireOldPassword = false;
 const pageSize = 10;
-const listPages = { banners: 1, stages: 1, rolls: 1, pulls: 1, characters: 1, audit: 1 };
+const listPages = { banners: 1, stages: 1, rolls: 1, pulls: 1, characters: 1, audit: 1, orbs: 1 };
 
 function checkSession() { return sessionStorage.getItem("glAuthed") === "1"; }
 function resolveAuth(pw) {
@@ -173,6 +174,7 @@ function loadLocal() {
         state.players    = old.players  || {};
         state.rollLog    = old.rollLog  || {};
         state.pullLog    = old.pullLog  || {};
+        state.orbLog     = old.orbLog   || {};
         state.auditLog   = old.auditLog || {};
         state.banners    = {};
         state.characters = {};
@@ -186,6 +188,7 @@ function loadLocal() {
       state.players    = p.players    || {};
       state.rollLog    = p.rollLog    || {};
       state.pullLog    = p.pullLog    || {};
+      state.orbLog     = p.orbLog     || {};
       state.auditLog   = p.auditLog   || {};
     }
   } catch (e) { console.warn("โหลด localStorage ล้มเหลว", e); }
@@ -251,6 +254,7 @@ function attachFirebaseListeners() {
   db.ref("players").on("value", snap => { state.players = snap.val() || {}; render(); });
   db.ref("rollLog").on("value", snap => { state.rollLog = snap.val() || {}; render(); });
   db.ref("pullLog").on("value", snap => { state.pullLog = snap.val() || {}; render(); });
+  db.ref("orbLog").on("value", snap => { state.orbLog = snap.val() || {}; render(); });
   db.ref("auditLog").on("value", snap => { state.auditLog = snap.val() || {}; render(); });
 }
 
@@ -336,6 +340,14 @@ function removeStage(id) {
   recordAudit("delete", "stage", id, "");
 }
 
+function addOrbReward(player, expected, actual) {
+  const id = uid();
+  const entry = { player, expected, actual, ts: Date.now() };
+  if (mode === "firebase") db.ref("orbLog/" + id).set(entry);
+  else { state.orbLog[id] = entry; saveLocal(); render(); }
+  recordAudit("add", "orb_reward", id, `${player}: ${expected} expected, ${actual} actual`);
+}
+
 // backward compat: char เก่ามี breaker:bool → แปลงเป็น role string
 function getCharRole(c) {
   if (c.role !== undefined) return c.role;
@@ -376,14 +388,18 @@ function computePlayerStats(playerName) {
   const s = state.settings;
   const playerRolls = Object.values(state.rollLog).filter(r => r.player === playerName);
   const playerPulls = Object.values(state.pullLog).filter(p => p.player === playerName);
+  const playerOrbs  = Object.values(state.orbLog || {}).filter(o => o.player === playerName);
 
   const totalRolls   = playerRolls.reduce((a, r) => a + Number(r.rolls || 0), 0);
-  const actualPoints = playerPulls.reduce((a, p) => a + getPullScore(p, s), 0);
+  const pullActualPoints = playerPulls.reduce((a, p) => a + getPullScore(p, s), 0);
   const actualHits   = playerPulls.length;
+  const orbExpected  = playerOrbs.reduce((a, o) => a + Number(o.expected || 0), 0);
+  const orbActual    = playerOrbs.reduce((a, o) => a + Number(o.actual || 0), 0);
 
   let expectedHits   = 0;
   let expectedPoints = 0;
   let variance       = 0;
+  let scoreVariance  = 0;
   const bannerMap    = {};
 
   for (const roll of playerRolls) {
@@ -415,6 +431,8 @@ function computePlayerStats(playerName) {
     if (isHoshi) bd.hoshiRolls += n; else bd.normalRolls += n;
 
     let pTotal = 0;
+    let scoreMeanPerRoll = 0;
+    let scoreSecondPerRoll = 0;
     for (const re of rates) {
       const cr    = isHoshi
         ? (rate5star > 0 ? Number(re.rate) / rate5star : 0)
@@ -424,24 +442,32 @@ function computePlayerStats(playerName) {
       expectedHits   += n * cr;
       expectedPoints += total;
       pTotal         += cr;
+      scoreMeanPerRoll += cr * base;
+      scoreSecondPerRoll += cr * base * base;
       if (bd.rateData[re.category]) {
         if (isHoshi) bd.rateData[re.category].hoshiTotal  += total;
         else         bd.rateData[re.category].normalTotal += total;
       }
     }
     variance += n * pTotal * Math.max(1 - pTotal, 0);
+    scoreVariance += n * Math.max(scoreSecondPerRoll - scoreMeanPerRoll * scoreMeanPerRoll, 0);
   }
 
   const breakdown = Object.values(bannerMap).map(bd => ({
     ...bd,
     total: Object.values(bd.rateData).reduce((acc, r) => acc + r.normalTotal + r.hoshiTotal, 0),
   }));
+  const actualPoints = pullActualPoints + orbActual;
+  expectedPoints += orbExpected;
+  const orbVariance = playerOrbs.length * ((300 - 100) ** 2 / 12);
+  const scoreSd = Math.sqrt(scoreVariance + orbVariance);
+  const deviation = actualPoints - expectedPoints;
 
-  const sd = Math.sqrt(variance);
-  const z  = variance > 0 ? (actualHits - expectedHits) / sd : 0;
+  const z = scoreSd > 0 ? deviation / scoreSd : 0;
 
   return { player: playerName, totalRolls, actualHits, expectedHits,
-           actualPoints, expectedPoints, deviation: actualPoints - expectedPoints, z, breakdown };
+           actualPoints, expectedPoints, deviation, z,
+           orbExpected, orbActual, orbDifference: orbActual - orbExpected, breakdown };
 }
 
 // -------------------------------------------------------------------------
@@ -475,6 +501,7 @@ function renderPager(kind, totalPages) {
 function render() {
   renderAuthPlayerSelect();
   renderPlayerSelects();
+  renderOrbPlayerSelect();
   renderBannerSelects();
   renderPlayerChips();
   renderBannerChips();
@@ -484,6 +511,7 @@ function render() {
   renderCharacterList();
   renderRollLogTable();
   renderPullLogTable();
+  renderOrbLogTable();
   renderAuditTable();
   renderDashboard();
 }
@@ -515,6 +543,28 @@ function renderAuditTable() {
     : `<tr><td colspan="5" class="empty-hint">ยังไม่มีบันทึก Audit</td></tr>`;
 }
 
+function renderOrbLogTable() {
+  const tbody = document.getElementById("orbLogBody");
+  if (!tbody) return;
+  const allRows = Object.values(state.orbLog || {}).sort((a, b) => b.ts - a.ts);
+  const page = pageItems(allRows, "orbs");
+  renderPager("orbs", page.totalPages);
+  const expected = allRows.reduce((sum, row) => sum + Number(row.expected || 0), 0);
+  const actual = allRows.reduce((sum, row) => sum + Number(row.actual || 0), 0);
+  document.getElementById("orbExpectedTotal").textContent = fmt(expected, 2);
+  document.getElementById("orbActualTotal").textContent = fmt(actual, 2);
+  document.getElementById("orbDifferenceTotal").textContent = fmt(actual - expected, 2);
+  tbody.innerHTML = page.rows.length
+    ? page.rows.map(row => `<tr>
+        <td>${fmtDate(row.ts)}</td>
+        <td class="name">${esc(row.player)}</td>
+        <td>${fmt(row.expected, 2)}</td>
+        <td>${fmt(row.actual, 2)}</td>
+        <td>${fmt(Number(row.actual) - Number(row.expected), 2)}</td>
+      </tr>`).join("")
+    : `<tr><td colspan="5" class="empty-hint">ยังไม่มีข้อมูล Orb</td></tr>`;
+}
+
 function renderPlayerSelects() {
   const names = playerNames();
   const sel   = document.getElementById("rollPlayerSelect");
@@ -530,6 +580,19 @@ function renderPlayerSelects() {
     ? names.map(n => `<option value="${esc(n)}">${esc(n)}</option>`).join("")
     : `<option value="">— เพิ่มผู้เล่นในแท็บตั้งค่าก่อน —</option>`;
   if (names.includes(prev)) sel.value = prev;
+}
+
+function renderOrbPlayerSelect() {
+  const sel = document.getElementById("orbPlayerSelect");
+  if (!sel) return;
+  const names = playerNames();
+  const loggedInPlayer = authPlayerName && names.includes(authPlayerName) ? authPlayerName : "";
+  sel.innerHTML = loggedInPlayer
+    ? `<option value="${esc(loggedInPlayer)}">${esc(loggedInPlayer)}</option>`
+    : names.length
+    ? names.map(n => `<option value="${esc(n)}">${esc(n)}</option>`).join("")
+    : `<option value="">ยังไม่มีผู้เล่น</option>`;
+  sel.disabled = !!loggedInPlayer;
 }
 
 function renderBannerSelects() {
@@ -742,7 +805,7 @@ function renderPullLogTable() {
     : `<tr><td colspan="10" class="empty-hint">ยังไม่มีตัวละครที่บันทึก</td></tr>`;
 }
 
-function buildExpectedTip(breakdown, expectedPoints) {
+function buildExpectedTip(breakdown, expectedPoints, orbExpected = 0) {
   if (!breakdown.length) return esc("ยังไม่มีข้อมูลตู้");
   const parts = [];
   for (const bd of breakdown) {
@@ -764,6 +827,7 @@ function buildExpectedTip(breakdown, expectedPoints) {
     parts.push(`  รวมตู้นี้:  ${fmt(bd.total, 1)} pts`);
     parts.push("─────────────────────────────────────────");
   }
+  if (orbExpected > 0) parts.push(`Orb expected: ${fmt(orbExpected, 2)}`);
   parts.push(`รวมทั้งหมด  ${fmt(expectedPoints, 1)} pts`);
   parts.push("");
   parts.push("ปกติ : rolls × rate%       × Base");
@@ -775,7 +839,7 @@ function renderDashboard() {
   const names     = playerNames();
   const tbody     = document.getElementById("dashboardBody");
   const emptyHint = document.getElementById("dashboardEmpty");
-  const stats     = names.map(computePlayerStats).filter(st => st.totalRolls > 0);
+  const stats     = names.map(computePlayerStats).filter(st => st.totalRolls > 0 || st.orbExpected > 0);
 
   if (!stats.length) { tbody.innerHTML = ""; emptyHint.hidden = false; return; }
   emptyHint.hidden = true;
@@ -788,7 +852,7 @@ function renderDashboard() {
     const zClass    = st.z <= -2 ? "z-bad" : st.z >= 2 ? "z-good" : "";
     const rankClass = rank === 1 ? "rank-1" : "";
     const devClass  = st.deviation < 0 ? "z-bad" : st.deviation > 0 ? "z-good" : "";
-    const expTip    = buildExpectedTip(st.breakdown, st.expectedPoints);
+    const expTip    = buildExpectedTip(st.breakdown, st.expectedPoints, st.orbExpected);
     return `<tr>
       <td class="name">${esc(st.player)}</td>
       <td>${st.totalRolls}</td>
@@ -886,6 +950,14 @@ function addBannerRateRow(defaultCat = "", defaultRate = "") {
 let editingCharId = null;
 
 document.addEventListener("DOMContentLoaded", () => {
+
+  const orbCard = document.querySelector(".orb-card");
+  const pullHistory = document.getElementById("pullsPager")?.parentElement;
+  if (orbCard && pullHistory) pullHistory.after(orbCard);
+  if (orbCard) {
+    orbCard.classList.add("orb-collapsed");
+    orbCard.querySelector("h3")?.addEventListener("click", () => orbCard.classList.toggle("orb-collapsed"));
+  }
 
   document.addEventListener("click", e => {
     if (!(e.target instanceof Element)) return;
@@ -1061,6 +1133,17 @@ document.addEventListener("DOMContentLoaded", () => {
   });
 
   // ── Roll form ─────────────────────────────────────────────────────────
+  document.getElementById("orbForm").addEventListener("submit", e => {
+    e.preventDefault();
+    const player = authPlayerName || document.getElementById("orbPlayerSelect").value;
+    const expected = Number(document.getElementById("orbExpected").value);
+    const actual = Number(document.getElementById("orbActual").value);
+    if (!player || expected < 100 || expected > 300 || actual < 100 || actual > 300) return;
+    addOrbReward(player, expected, actual);
+    document.getElementById("orbExpected").value = "";
+    document.getElementById("orbActual").value = "";
+  });
+
   document.getElementById("rollForm").addEventListener("submit", e => {
     e.preventDefault();
     const player   = authPlayerName || document.getElementById("rollPlayerSelect").value;

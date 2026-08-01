@@ -260,6 +260,13 @@ td.charname-cell{ font-family:var(--body); font-weight:600; color:var(--gold); }
 .auth-error{ color:var(--rose); font-size:13px; margin-top:6px; margin-bottom:0; }
 #showCreateUserBtn{ display:none !important; }
 .list-pager{ display:flex; align-items:center; justify-content:center; gap:10px; margin-top:12px; min-height:28px; }
+.orb-card{ margin:20px 0; }
+.orb-card h3{ cursor:pointer; }
+.orb-card h3::before{ content:"▸ "; color:var(--gold); }
+.orb-card:not(.orb-collapsed) h3::before{ content:"▾ "; }
+.orb-card.orb-collapsed > :not(h3){ display:none; }
+.orb-summary{ display:flex; gap:18px; flex-wrap:wrap; color:var(--ink-1); font-family:var(--mono); font-size:12px; margin:8px 0 12px; }
+.orb-summary strong{ color:var(--ink-0); }
 
 /* ---------- score tooltip ---------- */
 .score-cell{ text-align:right; }
@@ -278,11 +285,14 @@ td.charname-cell{ font-family:var(--body); font-weight:600; color:var(--gold); }
   font-family:var(--mono);
   font-size:12px;
   color:var(--ink-0);
-  white-space:pre;
+  white-space:pre-wrap;
+  overflow-wrap:anywhere;
+  word-break:break-word;
   line-height:1.7;
   box-shadow:0 8px 32px #000000b0;
   pointer-events:none;
-  max-width:460px;
+  width:max-content;
+  max-width:calc(100vw - 16px);
 }
 
 /* ---------- footer ---------- */

@@ -71,6 +71,7 @@
       <p class="hint">Z-score ยิ่งติดลบมาก = ยิ่งซวย · แต้มคาดหวัง = Σ (rolls × rate% × Base) ทุกตู้รวมโฮชิ — hover ที่แต้มคาดหวังเพื่อดูรายละเอียด</p>
     </div>
     <div class="table-scroll">
+      <p class="hint small">คะแนนจริงและคะแนนคาดหวังรวมค่า Orb ที่บันทึกไว้แล้ว</p>
       <table id="dashboardTable">
         <thead>
           <tr>
@@ -114,6 +115,35 @@
     </form>
 
     <!-- Session pulls: เพิ่มตัวที่ได้ก่อนบันทึก -->
+    <div class="card orb-card">
+      <h3>บันทึก Orb ที่ได้รับ</h3>
+      <p class="hint small">กรอกจำนวนที่คาดว่าจะได้รับและจำนวนที่ได้จริงจากในเกม (100–300)</p>
+      <form id="orbForm" class="form-grid">
+        <label>ผู้เล่น
+          <select id="orbPlayerSelect" required></select>
+        </label>
+        <label>จำนวนที่คาดหวัง
+          <input type="number" id="orbExpected" min="100" max="300" step="1" required>
+        </label>
+        <label>จำนวนที่ได้รับจริง
+          <input type="number" id="orbActual" min="100" max="300" step="1" required>
+        </label>
+        <button type="submit" class="btn-primary">+ บันทึก Orb</button>
+      </form>
+      <div class="orb-summary">
+        <span>คาดหวังรวม: <strong id="orbExpectedTotal">0</strong></span>
+        <span>ได้รับจริงรวม: <strong id="orbActualTotal">0</strong></span>
+        <span>ผลต่าง: <strong id="orbDifferenceTotal">0</strong></span>
+      </div>
+      <div class="table-scroll">
+        <table>
+          <thead><tr><th>เวลา</th><th>ผู้เล่น</th><th>คาดหวัง</th><th>ได้รับจริง</th><th>ผลต่าง</th></tr></thead>
+          <tbody id="orbLogBody"></tbody>
+        </table>
+        <div id="orbsPager" class="list-pager"></div>
+      </div>
+    </div>
+
     <div class="session-box">
       <div class="session-box-header">
         <span class="session-box-title">ตัวละครที่ได้ในเซสชันนี้
