@@ -1097,7 +1097,7 @@ function buildExpectedTip(breakdown, expectedPoints, orbExpected = 0) {
     parts.push(`  รวมตู้นี้:  ${fmt(bd.total, 1)} pts`);
     parts.push("─────────────────────────────────────────");
   }
-  if (orbExpected > 0) parts.push(`Orb expected (÷2.5): ${fmt(orbExpected * ORB_WEIGHT, 2)}`);
+  if (orbExpected > 0) parts.push(`Orb expected (x${ORB_WEIGHT}): ${fmt(orbExpected * ORB_WEIGHT, 2)}`);
   parts.push(`รวมทั้งหมด  ${fmt(expectedPoints, 1)} pts`);
   parts.push("");
   parts.push("ปกติ : rolls × rate%       × Base");
