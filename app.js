@@ -63,7 +63,7 @@ let authSetupPlayer = null;
 let authNewMode = false;
 let authRequireOldPassword = false;
 const pageSize = 10;
-const ORB_WEIGHT = 0.2;
+const ORB_WEIGHT = 0.4;
 const listPages = { banners: 1, stages: 1, rolls: 1, pulls: 1, characters: 1, audit: 1, orbs: 1 };
 const dashboardFilters = {
   includeOrbs: sessionStorage.getItem("glDashIncludeOrbs") !== "0",
@@ -881,7 +881,7 @@ function buildExpectedTip(breakdown, expectedPoints, orbExpected = 0) {
     parts.push(`  รวมตู้นี้:  ${fmt(bd.total, 1)} pts`);
     parts.push("─────────────────────────────────────────");
   }
-  if (orbExpected > 0) parts.push(`Orb expected (÷5): ${fmt(orbExpected * ORB_WEIGHT, 2)}`);
+  if (orbExpected > 0) parts.push(`Orb expected (÷2.5): ${fmt(orbExpected * ORB_WEIGHT, 2)}`);
   parts.push(`รวมทั้งหมด  ${fmt(expectedPoints, 1)} pts`);
   parts.push("");
   parts.push("ปกติ : rolls × rate%       × Base");
