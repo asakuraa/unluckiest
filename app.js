@@ -2,6 +2,7 @@
 // Gacha Luck Tracker — app.js v3
 // + Character Database (เพิ่มตัวละครก่อน pull)
 // + Breaker factor (+10 default)
+// + Low performance factor (0.5 default)
 // + Meta bonus → 20 default
 // + scoreSnapshot (คะแนนไม่เปลี่ยนตาม settings หลังบันทึก)
 // =========================================================================
@@ -36,6 +37,7 @@ const DEFAULT_SETTINGS = {
   dupWeights:   [1, 0.6, 0.3, 0],
   metaBonus:    20,
   breakerBonus: 10,
+  lowPerformanceMultiplier: 0.5,
   monthlyPoint: 5,
   stages:       {},
 };
@@ -380,8 +382,9 @@ function pullScore(pull, s) {
   const base    = s.baseScores[pull.category] || 0;
   const meta    = pull.meta    ? (s.metaBonus    || 0) : 0;
   const breaker = pull.breaker ? (s.breakerBonus || 0) : 0;
+  const performance = pull.lowPerformance ? (s.lowPerformanceMultiplier ?? 0.5) : 1;
   const dupW    = s.dupWeights[Math.min(Number(pull.dupTier), 3)] ?? 0;
-  let score     = (base + meta + breaker) * dupW;
+  let score     = (base + meta + breaker) * dupW * performance;
   if (pull.stageId && pull.stageApplies !== false && s.stages?.[pull.stageId]) {
     score += stagePointsOf(s.stages[pull.stageId], s);
   }
@@ -693,6 +696,7 @@ function renderSettingsForm() {
   const s = state.settings;
   document.getElementById("setMetaBonus").value    = s.metaBonus;
   document.getElementById("setBreakerBonus").value = s.breakerBonus ?? 10;
+  document.getElementById("setLowPerformanceMultiplier").value = s.lowPerformanceMultiplier ?? 0.5;
   document.getElementById("setMonthlyPoint").value = s.monthlyPoint;
 
   document.getElementById("baseScoreRows").innerHTML = CATEGORIES.map(c =>
@@ -711,10 +715,12 @@ function renderCharRoleSelect() {
   if (!select) return;
   const metaBonus = state.settings.metaBonus ?? 20;
   const breakerBonus = state.settings.breakerBonus ?? 10;
+  const lowPerformanceMultiplier = state.settings.lowPerformanceMultiplier ?? 0.5;
   select.innerHTML = `
     <option value="">Normal</option>
     <option value="meta">Meta (+${metaBonus})</option>
     <option value="breaker">Breaker (+${breakerBonus})</option>
+    <option value="lowPerformance">Low performance (×${lowPerformanceMultiplier})</option>
   `;
 }
 
@@ -753,6 +759,8 @@ function renderCharacterList() {
           ? '<span class="hoshi-badge" style="background:#c4920a">Meta</span>'
           : role === "breaker"
           ? '<span class="hoshi-badge" style="background:#7c4dff">Breaker</span>'
+          : role === "lowPerformance"
+          ? '<span class="hoshi-badge" style="background:#b23a48">Low performance</span>'
           : "—";
         return `<tr>
           <td class="name charname-cell">${esc(c.name)}</td>
@@ -792,15 +800,18 @@ function buildScoreTip(p, s) {
   const base    = s.baseScores[p.category] || 0;
   const meta    = p.meta    ? (s.metaBonus    || 0) : 0;
   const breaker = p.breaker ? (s.breakerBonus || 0) : 0;
+  const performance = p.lowPerformance ? (s.lowPerformanceMultiplier ?? 0.5) : 1;
   const dupW    = s.dupWeights[Math.min(Number(p.dupTier), 3)] ?? 0;
-  const charPts = (base + meta + breaker) * dupW;
+  const charPts = (base + meta + breaker) * dupW * performance;
 
   const bonuses = [];
   if (meta > 0)    bonuses.push(`Meta ${meta}`);
   if (breaker > 0) bonuses.push(`Breaker ${breaker}`);
+  if (p.lowPerformance) bonuses.push(`Low performance ×${performance}`);
   const baseStr = bonuses.length ? `${base} + ${bonuses.join(" + ")}` : `${base}`;
 
-  let lines = [`(${baseStr}) × dup ${dupW}  =  ${fmt(charPts, 1)} pts`];
+  const performanceStr = p.lowPerformance ? ` × performance ${performance}` : "";
+  let lines = [`(${baseStr})${performanceStr} × dup ${dupW}  =  ${fmt(charPts, 1)} pts`];
 
   let stagePts = 0;
   if (p.stageId && p.stageApplies !== false && s.stages?.[p.stageId]) {
@@ -847,7 +858,7 @@ function renderPullLogTable() {
           <td>${esc(cat)}</td>
           <td>${dupLabel}</td>
           <td>${p.meta    ? "✔" : "—"}</td>
-          <td>${p.breaker ? '<span class="hoshi-badge" style="background:#7c4dff;font-size:10px">B</span>' : "—"}</td>
+          <td>${p.breaker ? '<span class="hoshi-badge" style="background:#7c4dff;font-size:10px">B</span>' : p.lowPerformance ? '<span class="hoshi-badge" style="background:#b23a48;font-size:10px">LP</span>' : "—"}</td>
           <td class="name">${stageName}</td>
           <td>${stageGot}</td>
           <td class="score-cell tip-wrap">
@@ -966,7 +977,7 @@ function buildSessionPullRow() {
     ? chars.map(([id, c]) => {
         const catLabel = CATEGORIES.find(x => x.key === c.category)?.label || c.category;
         const role = getCharRole(c);
-        const roleTag = role === "meta" ? " ⭐" : role === "breaker" ? " 🔨" : "";
+        const roleTag = role === "meta" ? " ⭐" : role === "breaker" ? " 🔨" : role === "lowPerformance" ? " ↓" : "";
         return `<option value="${id}">${esc(c.name)} (${esc(catLabel)})${roleTag}</option>`;
       }).join("")
     : "";
@@ -1265,6 +1276,7 @@ document.addEventListener("DOMContentLoaded", () => {
           category:  char.category,
           meta:      role === "meta",
           breaker:   role === "breaker",
+          lowPerformance: role === "lowPerformance",
           dupTier, stageId, stageApplies,
           ts: Date.now() + i + 1,
         };
@@ -1280,7 +1292,7 @@ document.addEventListener("DOMContentLoaded", () => {
     const pullSummary = pullItems.length
       ? pullItems.map(p => {
           const cat   = CATEGORIES.find(c => c.key === p.category)?.label || p.category;
-          const flags = [p.meta?"Meta":null, p.breaker?"Breaker":null, p.stageId?"มีด่าน":null].filter(Boolean).join(", ");
+          const flags = [p.meta?"Meta":null, p.breaker?"Breaker":null, p.lowPerformance?"Low performance":null, p.stageId?"มีด่าน":null].filter(Boolean).join(", ");
           return `  • ${p.charName} — ${cat} ดุ๊ป${p.dupTier}${flags?` [${flags}]`:""}  (${fmt(p.scoreSnapshot,1)} pts)`;
         }).join("\n")
       : "  (ไม่มีตัวที่ได้)";
@@ -1424,6 +1436,7 @@ document.addEventListener("DOMContentLoaded", () => {
   };
   bindSetting("setMetaBonus",    v => (state.settings.metaBonus    = v));
   bindSetting("setBreakerBonus", v => (state.settings.breakerBonus = v));
+  bindSetting("setLowPerformanceMultiplier", v => (state.settings.lowPerformanceMultiplier = v));
   bindSetting("setMonthlyPoint", v => (state.settings.monthlyPoint = v));
 
   document.getElementById("baseScoreRows").addEventListener("change", e => {
