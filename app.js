@@ -351,6 +351,26 @@ function removeCharacter(id) {
   recordAudit("delete", "character", id, "");
 }
 
+function removeOwnLog(kind, id) {
+  const source = kind === "roll" ? state.rollLog : state.pullLog;
+  const entry = source?.[id];
+  if (!entry || entry.player !== authPlayerName) return;
+  const reason = prompt("Reason for removing this record (required):", "");
+  if (reason === null || !reason.trim()) {
+    alert("A reason is required.");
+    return;
+  }
+  const entity = kind === "roll" ? "roll" : "pull";
+  const details = JSON.stringify({ reason: reason.trim(), removedRecord: entry });
+  if (mode === "firebase") db.ref(`${kind}Log/${id}`).remove();
+  else {
+    delete source[id];
+    saveLocal();
+    render();
+  }
+  recordAudit("delete", entity, id, details);
+}
+
 function addStage(stage) {
   const id = uid();
   state.settings.stages = state.settings.stages || {};
@@ -661,9 +681,17 @@ function initializeSortableHeaders() {
       headers[0].before(th);
       headers = [...table.querySelectorAll("thead th")];
     }
-    if (bodyId === "pullLogBody" && headers.length === 10) {
+    if (bodyId === "pullLogBody" && headers.length === 10 && !headers[5].dataset.flagColumn) {
       headers[5].textContent = "Flag";
+      headers[5].dataset.flagColumn = "1";
       headers[6].remove();
+      headers = [...table.querySelectorAll("thead th")];
+    }
+    if ((bodyId === "rollLogBody" && headers.length === 5) || (bodyId === "pullLogBody" && headers.length === 9)) {
+      const th = document.createElement("th");
+      th.textContent = "";
+      th.dataset.actionColumn = "1";
+      headers[headers.length - 1].after(th);
       headers = [...table.querySelectorAll("thead th")];
     }
     keys.forEach((key, i) => {
@@ -946,7 +974,7 @@ function renderCharacterList() {
 
 function renderRollLogTable() {
   const tbody = document.getElementById("rollLogBody");
-  const allRows = sortedTableRows(Object.values(state.rollLog), "rolls");
+  const allRows = sortedTableRows(Object.entries(state.rollLog).map(([id, row]) => ({ ...row, __logId: id })), "rolls");
   const page = pageItems(allRows, "rolls");
   const rows = page.rows;
   renderPager("rolls", page.totalPages);
@@ -960,9 +988,10 @@ function renderRollLogTable() {
           <td class="name">${bannerName}</td>
           <td>${r.rolls}</td>
           <td>${r.hoshi ? '<span class="hoshi-badge">โฮชิ</span>' : '—'}</td>
+          <td>${r.player === authPlayerName ? `<button class="icon-btn" data-remove-roll="${esc(r.__logId)}" title="Remove">×</button>` : ""}</td>
         </tr>`;
       }).join("")
-    : `<tr><td colspan="5" class="empty-hint">ยังไม่มีข้อมูล</td></tr>`;
+    : `<tr><td colspan="6" class="empty-hint">ยังไม่มีข้อมูล</td></tr>`;
 }
 
 function buildScoreTip(p, s) {
@@ -1007,7 +1036,7 @@ function renderPullLogTable() {
   const tbody = document.getElementById("pullLogBody");
   if (!tbody) return;
   const s    = state.settings;
-  const allRows = sortedTableRows(Object.values(state.pullLog), "pulls");
+  const allRows = sortedTableRows(Object.entries(state.pullLog).map(([id, row]) => ({ ...row, __logId: id })), "pulls");
   const page = pageItems(allRows, "pulls");
   const rows = page.rows;
   renderPager("pulls", page.totalPages);
@@ -1040,9 +1069,10 @@ function renderPullLogTable() {
             <span class="score-num">${fmt(score, 1)}</span>
             <div class="tip-box">${tipText}</div>
           </td>
+          <td>${p.player === authPlayerName ? `<button class="icon-btn" data-remove-pull="${esc(p.__logId)}" title="Remove">×</button>` : ""}</td>
         </tr>`;
       }).join("")
-    : `<tr><td colspan="9" class="empty-hint">ยังไม่มีตัวละครที่บันทึก</td></tr>`;
+    : `<tr><td colspan="10" class="empty-hint">ยังไม่มีตัวละครที่บันทึก</td></tr>`;
 }
 
 function buildExpectedTip(breakdown, expectedPoints, orbExpected = 0) {
@@ -1402,6 +1432,10 @@ document.addEventListener("DOMContentLoaded", () => {
   document.addEventListener("click", e => {
     const th = e.target.closest?.("th[data-sort][data-sort-kind]");
     if (th) toggleTableSort(th.dataset.sortKind, th.dataset.sort);
+    const removeRoll = e.target.closest?.("[data-remove-roll]");
+    if (removeRoll) removeOwnLog("roll", removeRoll.dataset.removeRoll);
+    const removePull = e.target.closest?.("[data-remove-pull]");
+    if (removePull) removeOwnLog("pull", removePull.dataset.removePull);
   });
 
   // ── Session pull: เพิ่มแถว ─────────────────────────────────────────────
