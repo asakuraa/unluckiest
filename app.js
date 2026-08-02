@@ -65,7 +65,7 @@ let authSetupPlayer = null;
 let authNewMode = false;
 let authRequireOldPassword = false;
 const pageSize = 10;
-const ORB_WEIGHT = 0.4;
+const ORB_WEIGHT = 0.3;
 const listPages = { banners: 1, stages: 1, rolls: 1, pulls: 1, characters: 1, audit: 1, orbs: 1 };
 const tableSorts = {
   dashboard: { key: "player", dir: "asc" },
