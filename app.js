@@ -67,6 +67,15 @@ let authRequireOldPassword = false;
 const pageSize = 10;
 const ORB_WEIGHT = 0.4;
 const listPages = { banners: 1, stages: 1, rolls: 1, pulls: 1, characters: 1, audit: 1, orbs: 1 };
+const tableSorts = {
+  dashboard: { key: "player", dir: "asc" },
+  orbs:      { key: "ts", dir: "desc" },
+  rolls:     { key: "ts", dir: "desc" },
+  pulls:     { key: "ts", dir: "desc" },
+  audit:     { key: "ts", dir: "desc" },
+  characters:{ key: "runtime", dir: "desc" },
+  stages:    { key: "runtime", dir: "desc" },
+};
 const dashboardFilters = {
   includeOrbs: sessionStorage.getItem("glDashIncludeOrbs") !== "0",
   bannerIds: (() => {
@@ -313,6 +322,7 @@ function removeBanner(id) {
 }
 
 function addCharacter(char) {
+   char = { ts: Date.now(), ...char };
    const id = uid();
    if (mode === "firebase") {
      state.characters[id] = char;
@@ -344,7 +354,7 @@ function removeCharacter(id) {
 function addStage(stage) {
   const id = uid();
   state.settings.stages = state.settings.stages || {};
-  state.settings.stages[id] = stage;
+  state.settings.stages[id] = { ts: Date.now(), ...stage };
   persistSettings();
   recordAudit("add", "stage", id, stage.name);
 }
@@ -502,8 +512,52 @@ function computePlayerStats(playerName, opts = {}) {
 function fmt(n, d = 2) {
   return Number(n).toLocaleString("en-US", { minimumFractionDigits: d, maximumFractionDigits: d });
 }
+function timestampValue(ts) {
+  if (ts === null || ts === undefined || ts === "") return 0;
+  if (typeof ts === "object") {
+    if (ts[".sv"] !== undefined) return ts[".sv"] === "timestamp" ? Date.now() : timestampValue(ts[".sv"]);
+    if (ts.seconds !== undefined) return Number(ts.seconds) * 1000 + Math.floor(Number(ts.nanoseconds || 0) / 1e6);
+    if (ts._seconds !== undefined) return Number(ts._seconds) * 1000 + Math.floor(Number(ts._nanoseconds || 0) / 1e6);
+    if (ts.value !== undefined) return timestampValue(ts.value);
+    if (ts.timestamp !== undefined) return timestampValue(ts.timestamp);
+  }
+  if (typeof ts === "number") {
+    if (ts > 1e17) return ts / 1e6;
+    if (ts > 1e14) return ts / 1e3;
+    return ts < 1e12 ? ts * 1000 : ts;
+  }
+  const numeric = Number(ts);
+  if (Number.isFinite(numeric)) {
+    if (numeric > 1e17) return numeric / 1e6;
+    if (numeric > 1e14) return numeric / 1e3;
+    return numeric < 1e12 ? numeric * 1000 : numeric;
+  }
+  const parsed = Date.parse(String(ts));
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+function recordTimestamp(record, seen = new Set()) {
+  if (!record || typeof record !== "object" || seen.has(record)) return 0;
+  seen.add(record);
+  const direct = record.ts ?? record.timestamp ?? record.timeStamp ?? record.createdAt ?? record.created_at;
+  const parsed = timestampValue(direct);
+  if (parsed) return parsed;
+  for (const [key, value] of Object.entries(record)) {
+    if (/^(ts|timestamp|timestamped|createdat|created_at)$/i.test(key)) {
+      const keyed = timestampValue(value);
+      if (keyed) return keyed;
+    }
+    if (value && typeof value === "object") {
+      const nested = recordTimestamp(value, seen);
+      if (nested) return nested;
+    }
+  }
+  return 0;
+}
 function fmtDate(ts) {
-  return new Date(ts).toLocaleString("th-TH", { dateStyle: "short", timeStyle: "short" });
+  const value = timestampValue(ts);
+  if (!value) return "—";
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? "—" : date.toLocaleString("th-TH", { dateStyle: "short", timeStyle: "short" });
 }
 function playerNames()   { return Object.values(state.players).map(p => p.name); }
 function bannerEntries() { return Object.entries(state.banners); }
@@ -512,6 +566,117 @@ function pageItems(items, kind) {
   listPages[kind] = Math.min(Math.max(listPages[kind] || 1, 1), totalPages);
   const start = (listPages[kind] - 1) * pageSize;
   return { rows: items.slice(start, start + pageSize), totalPages };
+}
+
+function sortableValue(row, key, kind) {
+  if (kind === "characters" || kind === "stages") {
+    const value = row[1] || {};
+    if (key === "runtime") return Number(value.__runtimeOrder || 0);
+    if (key === "name") return value.name || "";
+    if (key === "ts") return recordTimestamp(value);
+    if (kind === "stages" && key === "difficulty") return Number(value.difficulty ?? value.weight ?? 0);
+    if (kind === "stages" && key === "points") return Number(stagePointsOf(value, state.settings) || 0);
+    return value[key] ?? "";
+  }
+  if (key === "player" && kind === "dashboard") return row.player || "";
+  if (key === "name" && kind === "dashboard") return row.player || "";
+  if (key === "score" && kind === "dashboard") return Number(row.actualPoints || 0);
+  if (key === "expected" && kind === "dashboard") return Number(row.expectedPoints || 0);
+  if (key === "deviation" && kind === "dashboard") return Number(row.deviation || 0);
+  if (key === "z" && kind === "dashboard") return Number(row.z || 0);
+  if (key === "rank" && kind === "dashboard") return Number(row.rank || 0);
+  if (key === "difference" && kind === "orbs") return Number(row.actual || 0) - Number(row.expected || 0);
+  if (key === "score" && kind === "pulls") return Number(getPullScore(row, state.settings) || 0);
+  if (key === "flag" && kind === "pulls") return row.meta ? "Meta" : row.breaker ? "Breaker" : row.lowPerformance ? "Low performance" : "";
+  const value = row?.[key];
+  if (key === "ts") return recordTimestamp(row);
+  if (typeof value === "number") return value;
+  return String(value ?? "");
+}
+
+function sortedTableRows(rows, kind) {
+  const sort = tableSorts[kind];
+  if (!sort) return rows;
+  return [...rows].sort((a, b) => {
+    const av = sortableValue(a, sort.key, kind);
+    const bv = sortableValue(b, sort.key, kind);
+    let result;
+    if (typeof av === "number" && typeof bv === "number") result = av - bv;
+    else result = String(av).localeCompare(String(bv), "th", { numeric: true, sensitivity: "base" });
+    return sort.dir === "desc" ? -result : result;
+  });
+}
+
+function addRuntimeOrder(entries) {
+  return entries.map(([id, value], index) => [id, { ...value, __runtimeOrder: index + 1 }]);
+}
+
+function toggleTableSort(kind, key) {
+  const current = tableSorts[kind] || { key, dir: "asc" };
+  tableSorts[kind] = current.key === key
+    ? { key, dir: current.dir === "asc" ? "desc" : "asc" }
+    : { key, dir: key === "ts" ? "desc" : "asc" };
+  render();
+}
+
+function updateSortIndicators() {
+  document.querySelectorAll("th[data-sort][data-sort-kind]").forEach(th => {
+    const kind = th.dataset.sortKind;
+    const sort = tableSorts[kind];
+    const label = th.dataset.sortLabel || th.textContent.replace(/[↕↑↓]$/, "").trim();
+    th.dataset.sortLabel = label;
+    th.textContent = sort?.key === th.dataset.sort
+      ? `${label} ${sort.dir === "asc" ? "↑" : "↓"}`
+      : `${label} ↕`;
+    th.setAttribute("aria-sort", sort?.key === th.dataset.sort
+      ? (sort.dir === "asc" ? "ascending" : "descending")
+      : "none");
+  });
+}
+
+function initializeSortableHeaders() {
+  const columns = {
+    dashboardBody: ["player", "totalRolls", "actualHits", "score", "expected", "deviation", "z", "rank"],
+    orbLogBody: ["ts", "player", "expected", "actual", "difference"],
+    rollLogBody: ["ts", "player", "bannerId", "rolls", "hoshi"],
+    pullLogBody: ["ts", "player", "charName", "category", "dupTier", "flag", "stageId", "stageApplies", "score"],
+    auditBody: ["ts", "actor", "action", "entity", "details"],
+    charBody: ["runtime", "name", "category", "role"],
+    stageBody: ["runtime", "name", "difficulty", "monthly", "points"],
+  };
+  Object.entries(columns).forEach(([bodyId, keys]) => {
+    const body = document.getElementById(bodyId);
+    const table = body?.closest("table");
+    if (!table) return;
+    let headers = [...table.querySelectorAll("thead th")];
+    if (bodyId === "charBody" && headers.length === 4) {
+      const th = document.createElement("th");
+      th.textContent = "Runtime";
+      headers[0].before(th);
+      headers = [...table.querySelectorAll("thead th")];
+    }
+    if (bodyId === "stageBody" && headers.length === 5) {
+      const th = document.createElement("th");
+      th.textContent = "Runtime";
+      headers[0].before(th);
+      headers = [...table.querySelectorAll("thead th")];
+    }
+    if (bodyId === "pullLogBody" && headers.length === 10) {
+      headers[5].textContent = "Flag";
+      headers[6].remove();
+      headers = [...table.querySelectorAll("thead th")];
+    }
+    keys.forEach((key, i) => {
+      if (!headers[i]) return;
+      headers[i].dataset.sortKind = bodyId === "charBody" ? "characters"
+        : bodyId === "stageBody" ? "stages"
+        : bodyId === "orbLogBody" ? "orbs"
+        : bodyId === "rollLogBody" ? "rolls"
+        : bodyId === "pullLogBody" ? "pulls"
+        : bodyId.replace("Body", "");
+      headers[i].dataset.sort = key;
+    });
+  });
 }
 function renderPager(kind, totalPages) {
   const el = document.getElementById(kind + "Pager");
@@ -542,6 +707,8 @@ function render() {
   renderOrbLogTable();
   renderAuditTable();
   renderDashboard();
+  initializeSortableHeaders();
+  updateSortIndicators();
 }
 
 function renderAuthPlayerSelect() {
@@ -586,7 +753,7 @@ function renderDashboardFilters() {
 function renderAuditTable() {
   const tbody = document.getElementById("auditBody");
   if (!tbody) return;
-  const allRows = Object.values(state.auditLog || {}).sort((a, b) => b.ts - a.ts);
+  const allRows = sortedTableRows(Object.values(state.auditLog || {}), "audit");
   const page = pageItems(allRows, "audit");
   renderPager("audit", page.totalPages);
   tbody.innerHTML = page.rows.length
@@ -603,7 +770,7 @@ function renderAuditTable() {
 function renderOrbLogTable() {
   const tbody = document.getElementById("orbLogBody");
   if (!tbody) return;
-  const allRows = Object.values(state.orbLog || {}).sort((a, b) => b.ts - a.ts);
+  const allRows = sortedTableRows(Object.values(state.orbLog || {}), "orbs");
   const page = pageItems(allRows, "orbs");
   renderPager("orbs", page.totalPages);
   const expected = allRows.reduce((sum, row) => sum + Number(row.expected || 0), 0);
@@ -727,7 +894,7 @@ function renderCharRoleSelect() {
 function renderStageTable() {
   const tbody   = document.getElementById("stageBody");
   const stages  = state.settings.stages || {};
-  const entries = Object.entries(stages);
+  const entries = sortedTableRows(addRuntimeOrder(Object.entries(stages)), "stages");
   const page = pageItems(entries, "stages");
   renderPager("stages", page.totalPages);
   tbody.innerHTML = entries.length
@@ -735,6 +902,7 @@ function renderStageTable() {
         const diffDisplay = st.difficulty !== undefined ? st.difficulty : `${fmt(st.weight, 2)} (เก่า)`;
         const pts = stagePointsOf(st, state.settings);
         return `<tr>
+          <td>#${st.__runtimeOrder}</td>
           <td class="name">${esc(st.name)}</td>
           <td>${diffDisplay}</td>
           <td>${st.monthly ? "✔" : "—"}</td>
@@ -742,13 +910,13 @@ function renderStageTable() {
           <td><button class="icon-btn" data-remove-stage="${id}" title="ลบ">×</button></td>
         </tr>`;
       }).join("")
-    : `<tr><td colspan="5" class="empty-hint">ยังไม่มีด่าน</td></tr>`;
+    : `<tr><td colspan="6" class="empty-hint">ยังไม่มีด่าน</td></tr>`;
 }
 
 function renderCharacterList() {
   const tbody = document.getElementById("charBody");
   if (!tbody) return;
-  const entries = Object.entries(state.characters).sort((a, b) => a[1].name.localeCompare(b[1].name, "th"));
+  const entries = sortedTableRows(addRuntimeOrder(Object.entries(state.characters)), "characters");
   const page = pageItems(entries, "characters");
   renderPager("characters", page.totalPages);
   tbody.innerHTML = entries.length
@@ -763,6 +931,7 @@ function renderCharacterList() {
           ? '<span class="hoshi-badge" style="background:#b23a48">Low performance</span>'
           : "—";
         return `<tr>
+          <td>#${c.__runtimeOrder}</td>
           <td class="name charname-cell">${esc(c.name)}</td>
           <td>${esc(catLabel)}</td>
           <td>${roleBadge}</td>
@@ -772,12 +941,12 @@ function renderCharacterList() {
           </td>
         </tr>`;
       }).join("")
-    : `<tr><td colspan="4" class="empty-hint">ยังไม่มีตัวละคร — เพิ่มด้านบน</td></tr>`;
+    : `<tr><td colspan="5" class="empty-hint">ยังไม่มีตัวละคร — เพิ่มด้านบน</td></tr>`;
 }
 
 function renderRollLogTable() {
   const tbody = document.getElementById("rollLogBody");
-  const allRows = Object.values(state.rollLog).sort((a, b) => b.ts - a.ts);
+  const allRows = sortedTableRows(Object.values(state.rollLog), "rolls");
   const page = pageItems(allRows, "rolls");
   const rows = page.rows;
   renderPager("rolls", page.totalPages);
@@ -838,7 +1007,7 @@ function renderPullLogTable() {
   const tbody = document.getElementById("pullLogBody");
   if (!tbody) return;
   const s    = state.settings;
-  const allRows = Object.values(state.pullLog).sort((a, b) => b.ts - a.ts);
+  const allRows = sortedTableRows(Object.values(state.pullLog), "pulls");
   const page = pageItems(allRows, "pulls");
   const rows = page.rows;
   renderPager("pulls", page.totalPages);
@@ -849,6 +1018,13 @@ function renderPullLogTable() {
         const stageName = stage ? esc(stage.name) : `<span class="hint small">—</span>`;
         const stageGot  = p.stageId ? (p.stageApplies !== false ? "✔" : "✘") : "—";
         const dupLabel  = `${p.dupTier}${Number(p.dupTier) >= 3 ? "+" : ""}`;
+        const flag       = p.meta
+          ? '<span class="hoshi-badge" style="background:#c4920a;font-size:10px">Meta</span>'
+          : p.breaker
+          ? '<span class="hoshi-badge" style="background:#7c4dff;font-size:10px">Breaker</span>'
+          : p.lowPerformance
+          ? '<span class="hoshi-badge" style="background:#b23a48;font-size:10px">Low performance</span>'
+          : "—";
         const score     = getPullScore(p, s);
         const tipText   = esc(buildScoreTip(p, s));
         return `<tr>
@@ -857,8 +1033,7 @@ function renderPullLogTable() {
           <td class="name charname-cell">${p.charName ? esc(p.charName) : '<span class="hint small">—</span>'}</td>
           <td>${esc(cat)}</td>
           <td>${dupLabel}</td>
-          <td>${p.meta    ? "✔" : "—"}</td>
-          <td>${p.breaker ? '<span class="hoshi-badge" style="background:#7c4dff;font-size:10px">B</span>' : p.lowPerformance ? '<span class="hoshi-badge" style="background:#b23a48;font-size:10px">LP</span>' : "—"}</td>
+          <td>${flag}</td>
           <td class="name">${stageName}</td>
           <td>${stageGot}</td>
           <td class="score-cell tip-wrap">
@@ -867,7 +1042,7 @@ function renderPullLogTable() {
           </td>
         </tr>`;
       }).join("")
-    : `<tr><td colspan="10" class="empty-hint">ยังไม่มีตัวละครที่บันทึก</td></tr>`;
+    : `<tr><td colspan="9" class="empty-hint">ยังไม่มีตัวละครที่บันทึก</td></tr>`;
 }
 
 function buildExpectedTip(breakdown, expectedPoints, orbExpected = 0) {
@@ -935,8 +1110,9 @@ function renderDashboard() {
 
   const sortedByZ = [...stats].sort((a, b) => a.z - b.z);
   const rankOf    = new Map(sortedByZ.map((st, i) => [st.player, i + 1]));
+  stats.forEach(st => { st.rank = rankOf.get(st.player); });
 
-  tbody.innerHTML = stats.map(st => {
+  tbody.innerHTML = sortedTableRows(stats, "dashboard").map(st => {
     const rank      = rankOf.get(st.player);
     const zClass    = st.z <= -2 ? "z-bad" : st.z >= 2 ? "z-good" : "";
     const rankClass = rank === 1 ? "rank-1" : "";
@@ -1221,6 +1397,11 @@ document.addEventListener("DOMContentLoaded", () => {
       btn.classList.add("active");
       document.getElementById("tab-" + btn.dataset.tab).classList.add("active");
     });
+  });
+
+  document.addEventListener("click", e => {
+    const th = e.target.closest?.("th[data-sort][data-sort-kind]");
+    if (th) toggleTableSort(th.dataset.sortKind, th.dataset.sort);
   });
 
   // ── Session pull: เพิ่มแถว ─────────────────────────────────────────────
